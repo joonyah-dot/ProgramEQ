@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 
 project(
-    __PLUGIN_NAME__
+    ProgramEQ
     VERSION 0.1.0
 )
 
@@ -13,29 +13,29 @@ if(BUILD_VST3_HARNESS)
 endif()
 
 juce_add_plugin(
-    __PLUGIN_NAME__
-    COMPANY_NAME "YourCompanyOrName"
+    ProgramEQ
+    COMPANY_NAME "KyleAudio"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     FORMATS VST3 Standalone
-    PRODUCT_NAME "__PLUGIN_NAME__"
+    PRODUCT_NAME "ProgramEQ"
 )
 
 # Generates JuceHeader.h + sets up include paths correctly
-juce_generate_juce_header(__PLUGIN_NAME__)
+juce_generate_juce_header(ProgramEQ)
 
 # Beginner-safe: avoids VST3/VST2 replacement automation warnings
 target_compile_definitions(
-    __PLUGIN_NAME__
+    ProgramEQ
     PRIVATE
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_USE_VST2_SDK=0
 )
 
 target_sources(
-    __PLUGIN_NAME__
+    ProgramEQ
     PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginProcessor.h
@@ -45,12 +45,12 @@ target_sources(
 )
 
 target_compile_features(
-    __PLUGIN_NAME__
+    ProgramEQ
     PRIVATE cxx_std_17
 )
 
 target_link_libraries(
-    __PLUGIN_NAME__
+    ProgramEQ
     PRIVATE
     juce::juce_audio_utils
     juce::juce_dsp

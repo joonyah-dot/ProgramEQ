@@ -10,10 +10,24 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "cmake --build build --config Debug --target __PLUGIN_NAME___VST3; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Copy-Item -Recurse -Force \"${workspaceFolder}\\build\\__PLUGIN_NAME___artefacts\\Debug\\VST3\\__PLUGIN_NAME__.vst3\" \"C:\\Program Files\\Common Files\\VST3\\\""
+        "cmake --build build --config Debug --target ProgramEQ_VST3; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Copy-Item -Recurse -Force \"${workspaceFolder}\\build\\ProgramEQ_artefacts\\Debug\\VST3\\ProgramEQ.vst3\" \"C:\\Program Files\\Common Files\\VST3\\\""
       ],
       "problemMatcher": [],
       "group": "build"
+    },
+    {
+      "type": "cmake",
+      "label": "CMake: build",
+      "command": "build",
+      "targets": [
+        "[N/A - Select Kit]"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "detail": "CMake template build task"
     }
   ]
 }
