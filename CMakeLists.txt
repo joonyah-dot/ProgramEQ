@@ -7,6 +7,18 @@ project(
 
 add_subdirectory(extern/juce)
 
+option(USE_CHOWDSP_WDF "Enable chowdsp_wdf dependency integration" ON)
+
+if(USE_CHOWDSP_WDF)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/chowdsp_wdf/CMakeLists.txt")
+        message(FATAL_ERROR "USE_CHOWDSP_WDF is ON, but external/chowdsp_wdf is missing. Run: git submodule update --init --recursive")
+    endif()
+
+    set(CHOWDSP_WDF_BUILD_TESTS OFF CACHE BOOL "Build chowdsp_wdf tests" FORCE)
+    set(CHOWDSP_WDF_BUILD_BENCHMARKS OFF CACHE BOOL "Build chowdsp_wdf benchmarks" FORCE)
+    add_subdirectory(external/chowdsp_wdf)
+endif()
+
 option(BUILD_VST3_HARNESS "Build VST3 harness CLI" ON)
 if(BUILD_VST3_HARNESS)
     add_subdirectory(tools/vst3_harness)
@@ -37,12 +49,36 @@ target_compile_definitions(
 target_sources(
     ProgramEQ
     PRIVATE
+    Source/DSP/PultecLfBoost.cpp
+    Source/DSP/PultecLfBoost.h
+    Source/Parameters.cpp
+    Source/Parameters.h
     Source/PluginProcessor.cpp
     Source/PluginProcessor.h
     Source/PluginEditor.cpp
     Source/PluginEditor.h
     Source/PluginEntry.cpp
 )
+
+if(USE_CHOWDSP_WDF)
+    target_link_libraries(
+        ProgramEQ
+        PRIVATE
+        chowdsp_wdf
+    )
+
+    target_compile_definitions(
+        ProgramEQ
+        PRIVATE
+        PROGRAM_EQ_USE_CHOWDSP_WDF=1
+    )
+else()
+    target_compile_definitions(
+        ProgramEQ
+        PRIVATE
+        PROGRAM_EQ_USE_CHOWDSP_WDF=0
+    )
+endif()
 
 target_compile_features(
     ProgramEQ

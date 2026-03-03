@@ -1,3 +1,6 @@
 [submodule "extern/juce"]
 	path = extern/juce
 	url = https://github.com/juce-framework/juce.git
+[submodule "external/chowdsp_wdf"]
+	path = external/chowdsp_wdf
+	url = https://github.com/Chowdhury-DSP/chowdsp_wdf

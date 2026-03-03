@@ -1,9 +1,14 @@
 #pragma once
 #include <JuceHeader.h>
 
+#include "DSP/PultecLfBoost.h"
+#include "Parameters.h"
+
 class ProgramEQAudioProcessor : public juce::AudioProcessor
 {
 public:
+    using APVTS = juce::AudioProcessorValueTreeState;
+
     ProgramEQAudioProcessor();
     ~ProgramEQAudioProcessor() override = default;
 
@@ -27,9 +32,20 @@ public:
     const juce::String getProgramName (int) override { return {}; }
     void changeProgramName (int, const juce::String&) override {}
 
-    void getStateInformation (juce::MemoryBlock&) override {}
-    void setStateInformation (const void*, int) override {}
+    void getStateInformation (juce::MemoryBlock&) override;
+    void setStateInformation (const void*, int) override;
+
+    APVTS& getValueTreeState() noexcept { return apvts; }
+    const APVTS& getValueTreeState() const noexcept { return apvts; }
 
 private:
+    APVTS apvts;
+    ProgramEQ::DSP::PultecLfBoost pultecLfBoost;
+
+    std::atomic<float>* trueBypassParam = nullptr;
+    std::atomic<float>* pultecEqInParam = nullptr;
+    std::atomic<float>* pultecLfFreqHzParam = nullptr;
+    std::atomic<float>* pultecLfBoostDbParam = nullptr;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ProgramEQAudioProcessor)
 };

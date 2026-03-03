@@ -1,0 +1,13 @@
+{
+  "warmupMs": 50,
+  "renderSeconds": 2.0,
+  "paramsByName": {
+    "global.true_bypass": 0.0,
+    "global.output_trim_db": 0.5,
+    "pultec.eq_in": 1.0,
+    "pultec.analog_enabled": 0.0,
+    "hpf100.enabled": 0.0,
+    "peq1.enabled": 0.0,
+    "peq2.enabled": 0.0
+  }
+}

@@ -2,6 +2,8 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "Parameters.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -43,6 +45,7 @@ void printUsage()
         << "  vst3_harness --help\n"
         << "  vst3_harness --version\n"
         << "  vst3_harness dump-params --plugin <path_to.vst3>\n"
+        << "  vst3_harness state-roundtrip --plugin <path_to.vst3> [--case <case.json>]\n"
         << "  vst3_harness render --plugin <path.vst3> --in <dry.wav> --outdir <dir> --sr <hz> --bs <samples> --ch <channels> [--case <case.json>]\n"
         << "  vst3_harness analyze --dry <dry.wav> --wet <wet.wav> --outdir <dir> [--auto-align] [--null]\n";
 }
@@ -163,6 +166,205 @@ bool getRequiredIntOption(const OptionMap& options,
 bool getFlag(const OptionMap& options, const char* key)
 {
     return options.find(key) != options.end();
+}
+
+juce::String getParameterID(const juce::AudioProcessorParameter& parameter)
+{
+    if (const auto* hostedParameter = dynamic_cast<const juce::HostedAudioProcessorParameter*>(&parameter))
+        return hostedParameter->getParameterID();
+
+    return {};
+}
+
+const ProgramEQ::Parameters::ParameterDefinition* getRegistryDefinitionForParameter(
+    int parameterIndex,
+    const juce::AudioProcessorParameter& parameter)
+{
+    const auto& definitions = ProgramEQ::Parameters::getParameterDefinitions();
+    const auto parameterName = parameter.getName(256);
+
+    if (juce::isPositiveAndBelow(parameterIndex, static_cast<int>(definitions.size())))
+    {
+        const auto& definition = definitions[static_cast<size_t>(parameterIndex)];
+        if (definition.name == parameterName)
+            return &definition;
+    }
+
+    const auto it = std::find_if(definitions.begin(),
+                                 definitions.end(),
+                                 [&parameterName](const auto& definition)
+                                 {
+                                     return definition.name == parameterName;
+                                 });
+
+    return it != definitions.end() ? &(*it) : nullptr;
+}
+
+juce::String appendLabel(juce::String text, const juce::String& label)
+{
+    if (label.isNotEmpty())
+        text << " " << label;
+
+    return text;
+}
+
+juce::String formatNumericValue(float value)
+{
+    juce::String text(value, 4);
+
+    while (text.containsChar('.') && (text.endsWithChar('0') || text.endsWithChar('.')))
+    {
+        if (text.endsWithChar('.'))
+        {
+            text = text.dropLastCharacters(1);
+            break;
+        }
+
+        text = text.dropLastCharacters(1);
+    }
+
+    return text;
+}
+
+juce::StringArray collectDiscreteValues(const juce::RangedAudioParameter& parameter)
+{
+    juce::StringArray values;
+    const int steps = parameter.getNumSteps();
+
+    if (steps <= 1 || steps > 64)
+        return values;
+
+    for (int step = 0; step < steps; ++step)
+    {
+        const float normalized = steps == 1 ? 0.0f : static_cast<float>(step) / static_cast<float>(steps - 1);
+        auto text = parameter.getText(normalized, 64).trim();
+
+        if (text.isEmpty())
+            text = formatNumericValue(parameter.convertFrom0to1(normalized));
+
+        values.add(text);
+    }
+
+    values.removeDuplicates(true);
+    return values;
+}
+
+juce::String formatDefinitionValue(const ProgramEQ::Parameters::ParameterDefinition& definition, float value)
+{
+    switch (definition.kind)
+    {
+        case ProgramEQ::Parameters::ParameterKind::boolean:
+            return value >= 0.5f ? "On" : "Off";
+
+        case ProgramEQ::Parameters::ParameterKind::choice:
+        {
+            const auto index = juce::jlimit(0, definition.choices.size() - 1, juce::roundToInt(value));
+            return appendLabel(definition.choices[index], definition.label);
+        }
+
+        case ProgramEQ::Parameters::ParameterKind::floating:
+            return appendLabel(formatNumericValue(value), definition.label);
+    }
+
+    return {};
+}
+
+juce::String getResolvedParameterID(int parameterIndex, const juce::AudioProcessorParameter& parameter)
+{
+    if (const auto* definition = getRegistryDefinitionForParameter(parameterIndex, parameter))
+        return definition->id;
+
+    return getParameterID(parameter);
+}
+
+juce::String formatRangeDescription(int parameterIndex, const juce::AudioProcessorParameter& parameter)
+{
+    if (const auto* definition = getRegistryDefinitionForParameter(parameterIndex, parameter))
+    {
+        switch (definition->kind)
+        {
+            case ProgramEQ::Parameters::ParameterKind::boolean:
+                return "[Off, On]";
+
+            case ProgramEQ::Parameters::ParameterKind::choice:
+                return appendLabel("[" + definition->choices.joinIntoString(", ") + "]", definition->label);
+
+            case ProgramEQ::Parameters::ParameterKind::floating:
+                return appendLabel(formatNumericValue(definition->range.start) + " .. "
+                                   + formatNumericValue(definition->range.end),
+                                   definition->label);
+        }
+    }
+
+    const auto label = parameter.getLabel();
+
+    if (const auto* rangedParameter = dynamic_cast<const juce::RangedAudioParameter*>(&parameter))
+    {
+        if (rangedParameter->isBoolean())
+            return "[Off, On]";
+
+        if (rangedParameter->isDiscrete())
+        {
+            const auto discreteValues = collectDiscreteValues(*rangedParameter);
+            if (!discreteValues.isEmpty())
+                return appendLabel("[" + discreteValues.joinIntoString(", ") + "]", label);
+        }
+
+        const auto range = rangedParameter->getNormalisableRange();
+        return appendLabel(formatNumericValue(range.start) + " .. " + formatNumericValue(range.end), label);
+    }
+
+    return "n/a";
+}
+
+juce::String formatDefaultValueDescription(const juce::AudioProcessorParameter& parameter)
+{
+    if (const auto* definition = getRegistryDefinitionForParameter(-1, parameter))
+        return formatDefinitionValue(*definition, definition->defaultValue);
+
+    const float defaultNormalized = parameter.getDefaultValue();
+
+    if (const auto* rangedParameter = dynamic_cast<const juce::RangedAudioParameter*>(&parameter))
+    {
+        auto text = rangedParameter->getText(defaultNormalized, 64).trim();
+        if (text.isNotEmpty())
+        {
+            if (const auto label = parameter.getLabel(); label.isNotEmpty())
+                text << " " << label;
+
+            return text;
+        }
+
+        const auto value = rangedParameter->convertFrom0to1(defaultNormalized);
+        auto numericText = formatNumericValue(value);
+
+        if (const auto label = parameter.getLabel(); label.isNotEmpty())
+            numericText << " " << label;
+
+        return numericText;
+    }
+
+    return formatNumericValue(defaultNormalized);
+}
+
+bool parameterMatchesLookupKey(int parameterIndex,
+                               const juce::AudioProcessorParameter& parameter,
+                               const std::string& lookupKey)
+{
+    if (const auto* definition = getRegistryDefinitionForParameter(parameterIndex, parameter))
+    {
+        if (definition->id.toLowerCase().toStdString() == lookupKey)
+            return true;
+
+        if (definition->name.toLowerCase().toStdString() == lookupKey)
+            return true;
+    }
+
+    const auto parameterID = getResolvedParameterID(parameterIndex, parameter).toLowerCase().toStdString();
+    if (!parameterID.empty() && parameterID == lookupKey)
+        return true;
+
+    return parameter.getName(256).toLowerCase().toStdString() == lookupKey;
 }
 
 juce::File resolvePath(const juce::String& pathText)
@@ -572,8 +774,7 @@ bool applyParameterMapByName(juce::AudioPluginInstance& instance,
             if (parameter == nullptr)
                 continue;
 
-            const auto parameterName = parameter->getName(256).toLowerCase().toStdString();
-            if (parameterName == nameLowercase)
+            if (parameterMatchesLookupKey(i, *parameter, nameLowercase))
             {
                 parameter->setValueNotifyingHost(normalizedValue);
                 found = true;
@@ -818,17 +1019,106 @@ int runDumpParams(const OptionMap& options)
         return fail(error);
 
     auto& parameters = instance->getParameters();
+    std::cout << "index\tid\tname\trange\tdefault\n";
+
     for (int i = 0; i < parameters.size(); ++i)
     {
         auto* parameter = parameters.getUnchecked(i);
         if (parameter == nullptr)
             continue;
 
+        const auto id = getResolvedParameterID(i, *parameter);
         const auto name = parameter->getName(256);
-        const auto defaultNormalized = parameter->getDefaultValue();
-        std::cout << i << "\t" << name.toStdString() << "\t" << defaultNormalized << "\n";
+        const auto range = formatRangeDescription(i, *parameter);
+        const auto defaultValue = formatDefaultValueDescription(*parameter);
+
+        std::cout << i
+                  << "\t" << (id.isNotEmpty() ? id : "<no-id>").toStdString()
+                  << "\t" << name.toStdString()
+                  << "\t" << range.toStdString()
+                  << "\t" << defaultValue.toStdString()
+                  << "\n";
     }
 
+    return 0;
+}
+
+int runStateRoundtrip(const OptionMap& options)
+{
+    juce::String pluginPathText;
+    juce::String casePathText;
+    juce::String error;
+
+    if (!getRequiredOption(options, "plugin", pluginPathText, error))
+        return fail(error);
+
+    RenderCase renderCase;
+    if (getOptionalOption(options, "case", casePathText))
+    {
+        const juce::File casePath = resolvePath(casePathText);
+        if (!parseRenderCaseFile(casePath, renderCase, error))
+            return fail(error);
+    }
+
+    const juce::File pluginPath = resolvePath(pluginPathText);
+    auto originalInstance = createVst3Instance(pluginPath, 48000.0, 256, error);
+    if (originalInstance == nullptr)
+        return fail(error);
+
+    if (!configurePluginForChannels(*originalInstance, 2, 48000.0, 256, error))
+        return fail(error);
+
+    if (!applyParameterMapByIndex(*originalInstance, renderCase.paramsByIndex, error))
+        return fail(error);
+
+    if (!applyParameterMapByName(*originalInstance, renderCase.paramsByName, error))
+        return fail(error);
+
+    std::map<juce::String, float> expectedValues;
+    auto& originalParameters = originalInstance->getParameters();
+    for (int i = 0; i < originalParameters.size(); ++i)
+    {
+        auto* parameter = originalParameters.getUnchecked(i);
+        if (parameter == nullptr)
+            continue;
+
+        expectedValues[getResolvedParameterID(i, *parameter)] = parameter->getValue();
+    }
+
+    juce::MemoryBlock stateData;
+    originalInstance->getStateInformation(stateData);
+
+    auto restoredInstance = createVst3Instance(pluginPath, 48000.0, 256, error);
+    if (restoredInstance == nullptr)
+        return fail(error);
+
+    if (!configurePluginForChannels(*restoredInstance, 2, 48000.0, 256, error))
+        return fail(error);
+
+    restoredInstance->setStateInformation(stateData.getData(), static_cast<int>(stateData.getSize()));
+
+    auto& restoredParameters = restoredInstance->getParameters();
+    for (int i = 0; i < restoredParameters.size(); ++i)
+    {
+        auto* parameter = restoredParameters.getUnchecked(i);
+        if (parameter == nullptr)
+            continue;
+
+        const auto id = getResolvedParameterID(i, *parameter);
+        const auto expectedIt = expectedValues.find(id);
+        if (expectedIt == expectedValues.end())
+            continue;
+
+        const auto actualValue = parameter->getValue();
+        if (std::abs(actualValue - expectedIt->second) > 1.0e-6f)
+        {
+            return fail("State roundtrip mismatch for parameter '" + id
+                        + "': expected normalized value " + juce::String(expectedIt->second)
+                        + ", got " + juce::String(actualValue));
+        }
+    }
+
+    std::cout << "State roundtrip OK for " << expectedValues.size() << " parameters\n";
     return 0;
 }
 
@@ -1107,6 +1397,8 @@ int main(int argc, char* argv[])
 
     if (firstArg == "dump-params")
         return runDumpParams(options);
+    if (firstArg == "state-roundtrip")
+        return runStateRoundtrip(options);
     if (firstArg == "render")
         return runRender(options);
     if (firstArg == "analyze")

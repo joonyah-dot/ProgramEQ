@@ -1,0 +1,28 @@
+{
+  "paramsByName": {
+    "global.true_bypass": 1.0,
+    "global.output_trim_db": 0.75,
+    "global.oversampling_mode": 1.0,
+    "global.ui_analyzer_enabled": 1.0,
+    "pultec.eq_in": 0.0,
+    "pultec.lf_freq_hz": 0.6666667,
+    "pultec.lf_boost_db": 0.4814815,
+    "pultec.lf_atten_db": 0.5714286,
+    "pultec.hf_boost_freq_khz": 0.8333333,
+    "pultec.hf_boost_db": 0.6666667,
+    "pultec.hf_bandwidth": 0.25,
+    "pultec.hf_atten_sel_khz": 0.5,
+    "pultec.hf_atten_db": 0.3125,
+    "pultec.analog_enabled": 1.0,
+    "pultec.drive": 0.6,
+    "hpf100.enabled": 1.0,
+    "peq1.enabled": 1.0,
+    "peq1.freq_hz": 0.4,
+    "peq1.gain_db": 0.8333333,
+    "peq1.q": 0.55,
+    "peq2.enabled": 1.0,
+    "peq2.freq_hz": 0.7,
+    "peq2.gain_db": 0.1666667,
+    "peq2.q": 0.2
+  }
+}

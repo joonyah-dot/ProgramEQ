@@ -104,11 +104,15 @@ try {
         & $harness.FullName dump-params --plugin $plugin.FullName
     }
 
+    Invoke-Step "State roundtrip" {
+        & $harness.FullName state-roundtrip --plugin $plugin.FullName --case (Join-Path $repoRoot "tests/cases/state_roundtrip.json")
+    }
+
     $dryImpulse = Join-Path $generatedDir "impulse.wav"
     $wetFile = Join-Path $runOutDir "wet.wav"
 
     Invoke-Step "Render offline (impulse -> wet.wav)" {
-        & $harness.FullName render --plugin $plugin.FullName --in $dryImpulse --outdir $runOutDir --sr 48000 --bs 256 --ch 2
+        & $harness.FullName render --plugin $plugin.FullName --in $dryImpulse --outdir $runOutDir --sr 48000 --bs 256 --ch 2 --case (Join-Path $repoRoot "tests/cases/smoke_flat.json")
     }
 
     Invoke-Step "Analyze + null test" {

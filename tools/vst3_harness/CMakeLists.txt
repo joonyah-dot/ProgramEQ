@@ -6,7 +6,14 @@ juce_add_console_app(
 target_sources(
     vst3_harness
     PRIVATE
+    ${CMAKE_SOURCE_DIR}/Source/Parameters.cpp
     src/main.cpp
+)
+
+target_include_directories(
+    vst3_harness
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}/Source
 )
 
 target_compile_features(
