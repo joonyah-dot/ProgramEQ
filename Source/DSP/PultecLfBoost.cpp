@@ -69,8 +69,7 @@ void PultecLfBoost::prepare(double sampleRate, int maximumBlockSize, int numChan
     juce::ignoreUnused(maximumBlockSize, numChannels);
 
     currentSampleRate = sampleRate;
-    branchGain.reset(sampleRate, smoothingTimeSeconds);
-    branchGain.setCurrentAndTargetValue(computeBranchGain(currentBoostDecibels));
+    branchGainSmoother.prepare(sampleRate, smoothingTimeSeconds, computeBranchGain(currentBoostDecibels));
 
     for (auto& channel : channels)
         channel.prepare(sampleRate);
@@ -85,7 +84,7 @@ void PultecLfBoost::reset() noexcept
     for (auto& channel : channels)
         channel.reset();
 
-    branchGain.setCurrentAndTargetValue(computeBranchGain(currentBoostDecibels));
+    branchGainSmoother.reset(computeBranchGain(currentBoostDecibels));
 }
 
 void PultecLfBoost::setEqInEnabled(bool shouldApply) noexcept
@@ -112,7 +111,7 @@ void PultecLfBoost::process(juce::AudioBuffer<float>& buffer) noexcept
 
     for (int sampleIndex = 0; sampleIndex < numSamples; ++sampleIndex)
     {
-        const auto mixGain = branchGain.getNextValue();
+        const auto mixGain = branchGainSmoother.getNextValue();
 
         for (int channelIndex = 0; channelIndex < numChannels; ++channelIndex)
         {
@@ -154,7 +153,7 @@ void PultecLfBoost::updateConfiguration() noexcept
     const auto targetBranchGain = computeBranchGain(currentBoostDecibels);
     if (targetBranchGain != lastConfiguredBranchGain)
     {
-        branchGain.setTargetValue(targetBranchGain);
+        branchGainSmoother.setTargetValue(targetBranchGain);
         lastConfiguredBranchGain = targetBranchGain;
     }
 }

@@ -2,6 +2,8 @@
 
 #include <JuceHeader.h>
 
+#include "ParameterSmoother.h"
+
 #if PROGRAM_EQ_USE_CHOWDSP_WDF
 #include <chowdsp_wdf/chowdsp_wdf.h>
 #endif
@@ -57,7 +59,7 @@ private:
     static constexpr float smoothingTimeSeconds = 0.05f;
 
     std::array<PultecLfBoostLowpassChannel, maxChannels> channels {};
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> branchGain;
+    LinearParameterSmoother branchGainSmoother;
 
     double currentSampleRate = 44100.0;
     bool eqInEnabled = true;
