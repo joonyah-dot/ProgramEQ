@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "notes": {
+    "lfFreqParamId": "pultec.lf_freq_hz",
+    "lfFreqNormalization": "choice_index / (choice_count - 1)",
+    "lfFreqChoicesHz": {
+      "20": 0.0,
+      "30": 0.3333333,
+      "60": 0.6666667,
+      "100": 1.0
+    }
+  },
+  "groups": {
+    "smoke": [
+      "true_bypass_on",
+      "fr_pultec_lf_boost_60hz_100pct"
+    ],
+    "fr": [
+      "fr_pultec_lf_boost_20hz_100pct",
+      "fr_pultec_lf_boost_30hz_100pct",
+      "fr_pultec_lf_boost_60hz_100pct",
+      "fr_pultec_lf_boost_100hz_100pct",
+      "fr_pultec_lf_boost_60hz_100pct_atten_75pct"
+    ],
+    "bypass": [
+      "true_bypass_on",
+      "eq_in_off_lf_boost_set"
+    ],
+    "step": [
+      "lf_boost_step_0pct",
+      "lf_boost_step_100pct"
+    ]
+  }
+}
