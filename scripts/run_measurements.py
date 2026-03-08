@@ -9,6 +9,8 @@ import subprocess
 import sys
 import wave
 
+import fr_analysis
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 CASES_DIR = REPO_ROOT / "tests" / "cases"
@@ -17,6 +19,10 @@ GENERATED_DIR = REPO_ROOT / "tests" / "_generated"
 ARTIFACTS_ROOT = REPO_ROOT / "artifacts" / "measurements"
 BUILD_DIR = REPO_ROOT / "build"
 TRUE_BYPASS_NULL_THRESHOLD_DBFS = -120.0
+EQ_IN_DIFFERENCE_MIN_DBFS = -120.0
+EQ_IN_ON_REFERENCE_CASE = "fr_pultec_lf_boost_60hz_100pct"
+FR_MIN_LOW_FREQUENCY_EMPHASIS_DB = 3.0
+FR_MONOTONIC_TOLERANCE_DB = 0.5
 
 
 def parse_args() -> argparse.Namespace:
@@ -123,6 +129,69 @@ def parse_metrics(metrics_path: pathlib.Path) -> dict | None:
     return json.loads(metrics_path.read_text(encoding="utf-8"))
 
 
+def load_case_definition(case_path: pathlib.Path) -> dict:
+    return json.loads(case_path.read_text(encoding="utf-8"))
+
+
+def render_case_to_outdir(
+    harness_path: pathlib.Path,
+    plugin_path: pathlib.Path,
+    dry_impulse_path: pathlib.Path,
+    case_path: pathlib.Path,
+    output_dir: pathlib.Path,
+    sample_rate: int,
+    block_size: int,
+    stdout_path: pathlib.Path,
+    stderr_path: pathlib.Path,
+) -> subprocess.CompletedProcess[str]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(harness_path),
+        "render",
+        "--plugin",
+        str(plugin_path),
+        "--in",
+        str(dry_impulse_path),
+        "--outdir",
+        str(output_dir),
+        "--sr",
+        str(sample_rate),
+        "--bs",
+        str(block_size),
+        "--ch",
+        "2",
+        "--case",
+        str(case_path),
+    ]
+    return run_command(command, stdout_path, stderr_path)
+
+
+def analyze_null(
+    harness_path: pathlib.Path,
+    dry_path: pathlib.Path,
+    wet_path: pathlib.Path,
+    output_dir: pathlib.Path,
+    stdout_path: pathlib.Path,
+    stderr_path: pathlib.Path,
+) -> tuple[subprocess.CompletedProcess[str], pathlib.Path, dict | None]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(harness_path),
+        "analyze",
+        "--dry",
+        str(dry_path),
+        "--wet",
+        str(wet_path),
+        "--outdir",
+        str(output_dir),
+        "--auto-align",
+        "--null",
+    ]
+    completed = run_command(command, stdout_path, stderr_path)
+    metrics_path = output_dir / "metrics.json"
+    return completed, metrics_path, parse_metrics(metrics_path)
+
+
 def run_case(
     harness_path: pathlib.Path,
     plugin_path: pathlib.Path,
@@ -136,38 +205,46 @@ def run_case(
 ) -> dict:
     case_root = output_root / case_name
     render_outdir = case_root / "render"
-    analyze_outdir = case_root / "analyze"
-    render_outdir.mkdir(parents=True, exist_ok=True)
-
     render_stdout = case_root / "render.stdout.txt"
     render_stderr = case_root / "render.stderr.txt"
-    render_command = [
-        str(harness_path),
-        "render",
-        "--plugin",
-        str(plugin_path),
-        "--in",
-        str(dry_impulse_path),
-        "--outdir",
-        str(render_outdir),
-        "--sr",
-        str(sample_rate),
-        "--bs",
-        str(block_size),
-        "--ch",
-        "2",
-        "--case",
-        str(case_path),
-    ]
-    render_completed = run_command(render_command, render_stdout, render_stderr)
+    case_definition = load_case_definition(case_path)
+    render_completed = render_case_to_outdir(
+        harness_path=harness_path,
+        plugin_path=plugin_path,
+        dry_impulse_path=dry_impulse_path,
+        case_path=case_path,
+        output_dir=render_outdir,
+        sample_rate=sample_rate,
+        block_size=block_size,
+        stdout_path=render_stdout,
+        stderr_path=render_stderr,
+    )
     wet_path = render_outdir / "wet.wav"
 
     result = {
         "case": case_name,
         "groups": groups_for_case(manifest, case_name),
         "casePath": str(case_path.resolve()),
+        "caseDefinition": case_definition,
         "render": {
-            "command": render_command,
+            "command": [
+                str(harness_path),
+                "render",
+                "--plugin",
+                str(plugin_path),
+                "--in",
+                str(dry_impulse_path),
+                "--outdir",
+                str(render_outdir),
+                "--sr",
+                str(sample_rate),
+                "--bs",
+                str(block_size),
+                "--ch",
+                "2",
+                "--case",
+                str(case_path),
+            ],
             "exitCode": render_completed.returncode,
             "stdoutPath": str(render_stdout.resolve()),
             "stderrPath": str(render_stderr.resolve()),
@@ -187,29 +264,119 @@ def run_case(
         result["message"] = "Render succeeded but wet.wav was not created"
         return result
 
-    if case_name == "true_bypass_on":
-        analyze_outdir.mkdir(parents=True, exist_ok=True)
+    result["pass"] = True
+    result["message"] = "OK"
+    return result
+
+
+def evaluate_fr_checks(points_db: dict[str, float]) -> dict:
+    ordered_labels = [f"{int(frequency_hz)}Hz" for frequency_hz in fr_analysis.CHECK_FREQUENCIES_HZ]
+    ordered_values = [float(points_db[label]) for label in ordered_labels]
+    low_frequency_emphasis_db = ordered_values[0] - ordered_values[-1]
+    monotonic_decrease = all(
+        ordered_values[index] >= (ordered_values[index + 1] - FR_MONOTONIC_TOLERANCE_DB)
+        for index in range(len(ordered_values) - 1)
+    )
+    positive_gain = max(ordered_values[:4]) > 0.0
+    emphasis_pass = low_frequency_emphasis_db >= FR_MIN_LOW_FREQUENCY_EMPHASIS_DB
+    passed = monotonic_decrease and positive_gain and emphasis_pass
+    return {
+        "passed": passed,
+        "checks": {
+            "monotonicDecreaseWithinTolerance": monotonic_decrease,
+            "lowFrequencyEmphasisDb": low_frequency_emphasis_db,
+            "minimumLowFrequencyEmphasisDb": FR_MIN_LOW_FREQUENCY_EMPHASIS_DB,
+            "positiveGainAtLfPoints": positive_gain,
+            "monotonicToleranceDb": FR_MONOTONIC_TOLERANCE_DB,
+        },
+    }
+
+
+def render_reference_case(
+    harness_path: pathlib.Path,
+    plugin_path: pathlib.Path,
+    dry_impulse_path: pathlib.Path,
+    output_root: pathlib.Path,
+    sample_rate: int,
+    block_size: int,
+) -> dict:
+    case_path = CASES_DIR / f"{EQ_IN_ON_REFERENCE_CASE}.json"
+    if not case_path.exists():
+        raise FileNotFoundError(f"Reference case file not found: {case_path}")
+
+    reference_root = output_root / "_references" / EQ_IN_ON_REFERENCE_CASE
+    stdout_path = reference_root / "render.stdout.txt"
+    stderr_path = reference_root / "render.stderr.txt"
+    render_completed = render_case_to_outdir(
+        harness_path=harness_path,
+        plugin_path=plugin_path,
+        dry_impulse_path=dry_impulse_path,
+        case_path=case_path,
+        output_dir=reference_root / "render",
+        sample_rate=sample_rate,
+        block_size=block_size,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+    )
+    wet_path = reference_root / "render" / "wet.wav"
+    return {
+        "case": EQ_IN_ON_REFERENCE_CASE,
+        "casePath": str(case_path.resolve()),
+        "renderExitCode": render_completed.returncode,
+        "stdoutPath": str(stdout_path.resolve()),
+        "stderrPath": str(stderr_path.resolve()),
+        "outDir": str((reference_root / "render").resolve()),
+        "wetPath": str(wet_path.resolve()),
+        "exists": wet_path.exists(),
+    }
+
+
+def apply_bypass_analysis(
+    results_by_case: dict[str, dict],
+    harness_path: pathlib.Path,
+    dry_impulse_path: pathlib.Path,
+    output_root: pathlib.Path,
+    plugin_path: pathlib.Path,
+    sample_rate: int,
+    block_size: int,
+) -> dict | None:
+    true_bypass_result = results_by_case.get("true_bypass_on")
+    eq_in_off_result = results_by_case.get("eq_in_off_lf_boost_set")
+
+    if true_bypass_result is None and eq_in_off_result is None:
+        return None
+
+    bypass_metrics: dict[str, dict] = {}
+
+    if true_bypass_result is not None and true_bypass_result.get("render", {}).get("exitCode") == 0:
+        case_root = output_root / "true_bypass_on"
         analyze_stdout = case_root / "analyze.stdout.txt"
         analyze_stderr = case_root / "analyze.stderr.txt"
-        analyze_command = [
-            str(harness_path),
-            "analyze",
-            "--dry",
-            str(dry_impulse_path),
-            "--wet",
-            str(wet_path),
-            "--outdir",
-            str(analyze_outdir),
-            "--auto-align",
-            "--null",
-        ]
-        analyze_completed = run_command(analyze_command, analyze_stdout, analyze_stderr)
-        metrics_path = analyze_outdir / "metrics.json"
-        metrics = parse_metrics(metrics_path)
+        analyze_outdir = case_root / "analyze"
+        wet_path = pathlib.Path(true_bypass_result["render"]["wetPath"])
+        analyze_completed, metrics_path, metrics = analyze_null(
+            harness_path=harness_path,
+            dry_path=dry_impulse_path,
+            wet_path=wet_path,
+            output_dir=analyze_outdir,
+            stdout_path=analyze_stdout,
+            stderr_path=analyze_stderr,
+        )
         delta_rms_dbfs = None if metrics is None else metrics.get("deltaRmsDbfs")
-
-        result["analysis"] = {
-            "command": analyze_command,
+        true_bypass_result["analysis"] = {
+            "kind": "true_bypass_null",
+            "command": [
+                str(harness_path),
+                "analyze",
+                "--dry",
+                str(dry_impulse_path),
+                "--wet",
+                str(wet_path),
+                "--outdir",
+                str(analyze_outdir),
+                "--auto-align",
+                "--null",
+            ],
             "exitCode": analyze_completed.returncode,
             "stdoutPath": str(analyze_stdout.resolve()),
             "stderrPath": str(analyze_stderr.resolve()),
@@ -219,24 +386,251 @@ def run_case(
             "thresholdDbfs": TRUE_BYPASS_NULL_THRESHOLD_DBFS,
         }
 
-        if analyze_completed.returncode != 0:
-            result["message"] = "Analyze failed"
-            return result
-
-        if delta_rms_dbfs is None:
-            result["message"] = "Analyze succeeded but metrics.json did not contain deltaRmsDbfs"
-            return result
-
-        if float(delta_rms_dbfs) > TRUE_BYPASS_NULL_THRESHOLD_DBFS:
-            result["message"] = (
-                f"True bypass null RMS {float(delta_rms_dbfs):.2f} dBFS exceeded "
-                f"{TRUE_BYPASS_NULL_THRESHOLD_DBFS:.2f} dBFS threshold"
+        true_bypass_pass = (
+            analyze_completed.returncode == 0
+            and delta_rms_dbfs is not None
+            and float(delta_rms_dbfs) <= TRUE_BYPASS_NULL_THRESHOLD_DBFS
+        )
+        true_bypass_result["pass"] = true_bypass_pass
+        true_bypass_result["message"] = (
+            "OK"
+            if true_bypass_pass
+            else (
+                "Analyze failed"
+                if analyze_completed.returncode != 0
+                else "Analyze succeeded but metrics.json did not contain deltaRmsDbfs"
+                if delta_rms_dbfs is None
+                else (
+                    f"True bypass null RMS {float(delta_rms_dbfs):.2f} dBFS exceeded "
+                    f"{TRUE_BYPASS_NULL_THRESHOLD_DBFS:.2f} dBFS threshold"
+                )
             )
-            return result
+        )
+        bypass_metrics["trueBypassOn"] = {
+            "case": "true_bypass_on",
+            "deltaRmsDbfs": delta_rms_dbfs,
+            "thresholdDbfs": TRUE_BYPASS_NULL_THRESHOLD_DBFS,
+            "pass": true_bypass_pass,
+            "metricsPath": str(metrics_path.resolve()),
+        }
 
-    result["pass"] = True
-    result["message"] = "OK"
-    return result
+    if eq_in_off_result is not None and eq_in_off_result.get("render", {}).get("exitCode") == 0:
+        reference_result = results_by_case.get(EQ_IN_ON_REFERENCE_CASE)
+        reference_info: dict
+        if reference_result is not None and reference_result.get("render", {}).get("exitCode") == 0:
+            reference_info = {
+                "case": EQ_IN_ON_REFERENCE_CASE,
+                "casePath": reference_result["casePath"],
+                "renderExitCode": reference_result["render"]["exitCode"],
+                "stdoutPath": reference_result["render"]["stdoutPath"],
+                "stderrPath": reference_result["render"]["stderrPath"],
+                "outDir": reference_result["render"]["outDir"],
+                "wetPath": reference_result["render"]["wetPath"],
+                "exists": pathlib.Path(reference_result["render"]["wetPath"]).exists(),
+            }
+        else:
+            reference_info = render_reference_case(
+                harness_path=harness_path,
+                plugin_path=plugin_path,
+                dry_impulse_path=dry_impulse_path,
+                output_root=output_root,
+                sample_rate=sample_rate,
+                block_size=block_size,
+            )
+
+        analyze_root = output_root / "eq_in_off_lf_boost_set" / "analyze"
+        analyze_stdout = output_root / "eq_in_off_lf_boost_set" / "analyze.stdout.txt"
+        analyze_stderr = output_root / "eq_in_off_lf_boost_set" / "analyze.stderr.txt"
+
+        delta_rms_dbfs = None
+        analyze_exit_code = 1
+        metrics_path = analyze_root / "metrics.json"
+
+        if reference_info["renderExitCode"] == 0 and reference_info["exists"]:
+            analyze_completed, metrics_path, metrics = analyze_null(
+                harness_path=harness_path,
+                dry_path=pathlib.Path(eq_in_off_result["render"]["wetPath"]),
+                wet_path=pathlib.Path(reference_info["wetPath"]),
+                output_dir=analyze_root,
+                stdout_path=analyze_stdout,
+                stderr_path=analyze_stderr,
+            )
+            analyze_exit_code = analyze_completed.returncode
+            delta_rms_dbfs = None if metrics is None else metrics.get("deltaRmsDbfs")
+        else:
+            analyze_completed = None
+
+        eq_in_off_result["analysis"] = {
+            "kind": "eq_in_shaping_difference",
+            "compareCase": EQ_IN_ON_REFERENCE_CASE,
+            "compareCasePath": reference_info["casePath"],
+            "compareWetPath": reference_info["wetPath"],
+            "compareRenderExitCode": reference_info["renderExitCode"],
+            "command": None if analyze_completed is None else [
+                str(harness_path),
+                "analyze",
+                "--dry",
+                eq_in_off_result["render"]["wetPath"],
+                "--wet",
+                reference_info["wetPath"],
+                "--outdir",
+                str(analyze_root),
+                "--auto-align",
+                "--null",
+            ],
+            "exitCode": analyze_exit_code,
+            "stdoutPath": str(analyze_stdout.resolve()),
+            "stderrPath": str(analyze_stderr.resolve()),
+            "outDir": str(analyze_root.resolve()),
+            "metricsPath": str(metrics_path.resolve()),
+            "deltaRmsDbfs": delta_rms_dbfs,
+            "minimumDifferenceDbfs": EQ_IN_DIFFERENCE_MIN_DBFS,
+        }
+
+        eq_in_pass = (
+            reference_info["renderExitCode"] == 0
+            and reference_info["exists"]
+            and analyze_completed is not None
+            and analyze_exit_code == 0
+            and delta_rms_dbfs is not None
+            and float(delta_rms_dbfs) > EQ_IN_DIFFERENCE_MIN_DBFS
+        )
+        eq_in_off_result["pass"] = eq_in_pass
+        eq_in_off_result["message"] = (
+            "OK"
+            if eq_in_pass
+            else (
+                f"Reference render failed for {EQ_IN_ON_REFERENCE_CASE}"
+                if reference_info["renderExitCode"] != 0 or not reference_info["exists"]
+                else "Analyze failed"
+                if analyze_completed is not None and analyze_exit_code != 0
+                else "Analyze succeeded but metrics.json did not contain deltaRmsDbfs"
+                if delta_rms_dbfs is None
+                else (
+                    f"EQ IN on/off difference {float(delta_rms_dbfs):.2f} dBFS was not greater than "
+                    f"{EQ_IN_DIFFERENCE_MIN_DBFS:.2f} dBFS"
+                )
+            )
+        )
+        bypass_metrics["eqInOffLfBoostSet"] = {
+            "case": "eq_in_off_lf_boost_set",
+            "referenceCase": EQ_IN_ON_REFERENCE_CASE,
+            "deltaRmsDbfs": delta_rms_dbfs,
+            "minimumDifferenceDbfs": EQ_IN_DIFFERENCE_MIN_DBFS,
+            "pass": eq_in_pass,
+            "metricsPath": str(metrics_path.resolve()),
+            "referenceRender": reference_info,
+        }
+
+    bypass_metrics_path = output_root / "bypass_metrics.json"
+    bypass_metrics_path.write_text(json.dumps(bypass_metrics, indent=2), encoding="utf-8")
+    return {
+        "metricsPath": str(bypass_metrics_path.resolve()),
+        "results": bypass_metrics,
+    }
+
+
+def apply_fr_analysis(
+    results_by_case: dict[str, dict],
+    dry_impulse_path: pathlib.Path,
+    output_root: pathlib.Path,
+) -> dict | None:
+    fr_results = {
+        case_name: result
+        for case_name, result in results_by_case.items()
+        if "fr" in result.get("groups", [])
+    }
+    if not fr_results:
+        return None
+
+    metrics_index: dict[str, dict] = {}
+    failed_cases: list[str] = []
+
+    for case_name, result in fr_results.items():
+        if result.get("render", {}).get("exitCode") != 0:
+            metrics_index[case_name] = {
+                "case": case_name,
+                "pass": False,
+                "error": "Render failed",
+            }
+            failed_cases.append(case_name)
+            continue
+
+        wet_path = pathlib.Path(result["render"]["wetPath"])
+        if not wet_path.exists():
+            result["pass"] = False
+            result["message"] = "Render succeeded but wet.wav was not created"
+            metrics_index[case_name] = {
+                "case": case_name,
+                "pass": False,
+                "error": result["message"],
+            }
+            failed_cases.append(case_name)
+            continue
+
+        case_root = output_root / case_name
+        metrics_path = case_root / "fr_metrics.json"
+        curve_path = case_root / "fr_curve.csv"
+        plot_path = case_root / "fr_plot.png"
+
+        try:
+            analysis = fr_analysis.analyze_frequency_response_files(
+                dry_impulse_path,
+                wet_path,
+            )
+            fr_analysis.write_metrics_json(metrics_path, analysis)
+            fr_analysis.write_curve_csv(curve_path, analysis["frequenciesHz"], analysis["magnitudeDb"])
+            fr_analysis.save_plot(plot_path, analysis["frequenciesHz"], analysis["magnitudeDb"])
+            provisional = evaluate_fr_checks(analysis["pointsDb"])
+
+            result["analysis"] = {
+                "kind": "frequency_response",
+                "sampleRate": int(analysis["sampleRate"]),
+                "shiftSamples": int(analysis["shiftSamples"]),
+                "pointsDb": {label: float(value) for label, value in analysis["pointsDb"].items()},
+                "metricsPath": str(metrics_path.resolve()),
+                "curveCsvPath": str(curve_path.resolve()),
+                "plotPath": str(plot_path.resolve()),
+                "provisional": provisional,
+            }
+            result["pass"] = bool(provisional["passed"])
+            result["message"] = (
+                "OK"
+                if result["pass"]
+                else (
+                    f"FR provisional checks failed: "
+                    f"LF emphasis {provisional['checks']['lowFrequencyEmphasisDb']:.2f} dB, "
+                    f"monotonic={provisional['checks']['monotonicDecreaseWithinTolerance']}, "
+                    f"positiveGain={provisional['checks']['positiveGainAtLfPoints']}"
+                )
+            )
+            metrics_index[case_name] = {
+                "case": case_name,
+                "metricsPath": str(metrics_path.resolve()),
+                "curveCsvPath": str(curve_path.resolve()),
+                "plotPath": str(plot_path.resolve()),
+                "pointsDb": result["analysis"]["pointsDb"],
+                "shiftSamples": result["analysis"]["shiftSamples"],
+                "pass": result["pass"],
+            }
+            if not result["pass"]:
+                failed_cases.append(case_name)
+        except Exception as exc:
+            result["analysis"] = {
+                "kind": "frequency_response",
+                "error": str(exc),
+                "metricsPath": str(metrics_path.resolve()),
+                "curveCsvPath": str(curve_path.resolve()),
+                "plotPath": str(plot_path.resolve()),
+            }
+            result["pass"] = False
+            result["message"] = f"FR analysis failed: {exc}"
+            failed_cases.append(case_name)
+
+    return {
+        "results": metrics_index,
+        "failedCases": failed_cases,
+    }
 
 
 def main() -> int:
@@ -260,22 +654,23 @@ def main() -> int:
     output_root.mkdir(parents=True, exist_ok=True)
 
     results: list[dict] = []
+    results_by_case: dict[str, dict] = {}
     any_failed = False
 
     for case_name in case_names:
         case_path = CASES_DIR / f"{case_name}.json"
         if not case_path.exists():
-            results.append(
-                {
-                    "case": case_name,
-                    "groups": groups_for_case(manifest, case_name),
-                    "casePath": str(case_path.resolve()),
-                    "render": None,
-                    "analysis": None,
-                    "pass": False,
-                    "message": "Case file not found",
-                }
-            )
+            missing_result = {
+                "case": case_name,
+                "groups": groups_for_case(manifest, case_name),
+                "casePath": str(case_path.resolve()),
+                "render": None,
+                "analysis": None,
+                "pass": False,
+                "message": "Case file not found",
+            }
+            results.append(missing_result)
+            results_by_case[case_name] = missing_result
             any_failed = True
             continue
 
@@ -291,9 +686,34 @@ def main() -> int:
             manifest=manifest,
         )
         results.append(result)
-        any_failed = any_failed or (not result["pass"])
+        results_by_case[case_name] = result
+
+    bypass_summary = apply_bypass_analysis(
+        results_by_case=results_by_case,
+        harness_path=harness_path,
+        dry_impulse_path=dry_impulse_path,
+        output_root=output_root,
+        plugin_path=plugin_path,
+        sample_rate=args.sr,
+        block_size=args.bs,
+    )
+    fr_summary = apply_fr_analysis(
+        results_by_case=results_by_case,
+        dry_impulse_path=dry_impulse_path,
+        output_root=output_root,
+    )
+
+    if bypass_summary is not None:
+        print(f"Wrote: {bypass_summary['metricsPath']}")
+
+    if fr_summary is not None:
+        for case_name, fr_result in fr_summary["results"].items():
+            print(f"Wrote: {fr_result['metricsPath']}")
+
+    any_failed = any((not result["pass"]) for result in results)
+    for result in results:
         status_text = "PASS" if result["pass"] else "FAIL"
-        print(f"[{status_text}] {case_name}: {result['message']}")
+        print(f"[{status_text}] {result['case']}: {result['message']}")
 
     summary = {
         "version": "1",
@@ -309,6 +729,8 @@ def main() -> int:
             "outputRoot": str(output_root.resolve()),
             "dryImpulsePath": str(dry_impulse_path.resolve()),
         },
+        "bypass": bypass_summary,
+        "fr": fr_summary,
         "results": results,
         "pass": not any_failed,
     }
