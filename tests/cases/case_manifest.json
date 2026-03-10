@@ -20,7 +20,17 @@
       "fr_pultec_lf_boost_30hz_100pct",
       "fr_pultec_lf_boost_60hz_100pct",
       "fr_pultec_lf_boost_100hz_100pct",
-      "fr_pultec_lf_boost_60hz_100pct_atten_75pct"
+      "fr_pultec_lf_boost_60hz_100pct_atten_75pct",
+      "fr_pultec_lf_boost_60hz_75pct_atten_25pct",
+      "fr_pultec_lf_boost_60hz_75pct_atten_50pct",
+      "fr_pultec_lf_boost_60hz_75pct_atten_75pct",
+      "fr_pultec_lf_boost_100hz_75pct_atten_25pct",
+      "fr_pultec_lf_boost_100hz_75pct_atten_50pct",
+      "fr_pultec_lf_boost_100hz_75pct_atten_75pct",
+      "fr_pultec_lf_atten_20hz_100pct",
+      "fr_pultec_lf_atten_30hz_100pct",
+      "fr_pultec_lf_atten_60hz_100pct",
+      "fr_pultec_lf_atten_100hz_100pct"
     ],
     "bypass": [
       "true_bypass_on",

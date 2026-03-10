@@ -50,6 +50,7 @@ public:
     void setEqInEnabled(bool shouldApply) noexcept;
     void setFrequencySelection(int selectionIndex) noexcept;
     void setBoostDecibels(float boostDb) noexcept;
+    void setAttenuationDecibels(float attenuationDb) noexcept;
 
     void process(juce::AudioBuffer<float>& buffer) noexcept;
 
@@ -58,18 +59,26 @@ public:
 private:
     static constexpr float smoothingTimeSeconds = 0.05f;
 
-    std::array<PultecLfBoostLowpassChannel, maxChannels> channels {};
-    LinearParameterSmoother branchGainSmoother;
+    std::array<PultecLfBoostLowpassChannel, maxChannels> boostChannels {};
+    std::array<PultecLfBoostLowpassChannel, maxChannels> attenuationChannels {};
+    std::array<PultecLfBoostLowpassChannel, maxChannels> interactionChannels {};
+    LinearParameterSmoother boostGainSmoother;
+    LinearParameterSmoother attenuationGainSmoother;
 
     double currentSampleRate = 44100.0;
     bool eqInEnabled = true;
     int currentFrequencySelection = 0;
     float currentBoostDecibels = 0.0f;
+    float currentAttenuationDecibels = 0.0f;
     float lastConfiguredFrequencyHz = -1.0f;
-    float lastConfiguredBranchGain = -1.0f;
+    float lastConfiguredBoostGain = -1.0f;
+    float lastConfiguredAttenuationGain = -1.0f;
 
     void updateConfiguration() noexcept;
-    static float computeBranchGain(float boostDb) noexcept;
+    static float computeBoostGain(float boostDb) noexcept;
+    static float computeAttenuationGain(float attenuationDb) noexcept;
+    static float computeInteractionFrequencyHz(float frequencyHz) noexcept;
+    static float computeInteractionGain(float boostGain, float attenuationGain) noexcept;
 };
 
 } // namespace ProgramEQ::DSP

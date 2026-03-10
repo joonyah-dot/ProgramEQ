@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import json
 import pathlib
@@ -23,6 +24,9 @@ EQ_IN_DIFFERENCE_MIN_DBFS = -120.0
 EQ_IN_ON_REFERENCE_CASE = "fr_pultec_lf_boost_60hz_100pct"
 FR_MIN_LOW_FREQUENCY_EMPHASIS_DB = 3.0
 FR_MONOTONIC_TOLERANCE_DB = 0.5
+FR_MIN_LOW_FREQUENCY_ATTENUATION_DB = 2.0
+FR_MIN_COMBINED_LOW_FREQUENCY_SHAPE_SPAN_DB = 0.5
+FR_MIN_COMBINED_DEVIATION_FROM_SIMPLE_SUM_DB = 0.25
 
 
 def parse_args() -> argparse.Namespace:
@@ -269,9 +273,50 @@ def run_case(
     return result
 
 
-def evaluate_fr_checks(points_db: dict[str, float]) -> dict:
+def evaluate_fr_checks(case_definition: dict, points_db: dict[str, float]) -> dict:
     ordered_labels = [f"{int(frequency_hz)}Hz" for frequency_hz in fr_analysis.CHECK_FREQUENCIES_HZ]
     ordered_values = [float(points_db[label]) for label in ordered_labels]
+    params_by_name = case_definition.get("paramsByName", {})
+    boost_amount = float(params_by_name.get("pultec.lf_boost_db", 0.0))
+    attenuation_amount = float(params_by_name.get("pultec.lf_atten_db", 0.0))
+    boost_enabled = boost_amount > 0.0
+    attenuation_enabled = attenuation_amount > 0.0
+
+    if attenuation_enabled and not boost_enabled:
+        low_frequency_attenuation_db = ordered_values[-1] - ordered_values[0]
+        monotonic_increase = all(
+            ordered_values[index] <= (ordered_values[index + 1] + FR_MONOTONIC_TOLERANCE_DB)
+            for index in range(len(ordered_values) - 1)
+        )
+        negative_gain = min(ordered_values[:4]) < 0.0
+        attenuation_pass = low_frequency_attenuation_db >= FR_MIN_LOW_FREQUENCY_ATTENUATION_DB
+        passed = monotonic_increase and negative_gain and attenuation_pass
+        return {
+            "mode": "attenuation_only",
+            "passed": passed,
+            "checks": {
+                "monotonicIncreaseWithinTolerance": monotonic_increase,
+                "lowFrequencyAttenuationDb": low_frequency_attenuation_db,
+                "minimumLowFrequencyAttenuationDb": FR_MIN_LOW_FREQUENCY_ATTENUATION_DB,
+                "negativeGainAtLfPoints": negative_gain,
+                "monotonicToleranceDb": FR_MONOTONIC_TOLERANCE_DB,
+            },
+        }
+
+    if boost_enabled and attenuation_enabled:
+        low_frequency_shape_span_db = abs(ordered_values[0] - ordered_values[-1])
+        any_shaping = max(abs(value) for value in ordered_values) >= 0.5
+        passed = low_frequency_shape_span_db >= FR_MIN_COMBINED_LOW_FREQUENCY_SHAPE_SPAN_DB and any_shaping
+        return {
+            "mode": "boost_and_attenuation",
+            "passed": passed,
+            "checks": {
+                "lowFrequencyShapeSpanDb": low_frequency_shape_span_db,
+                "minimumLowFrequencyShapeSpanDb": FR_MIN_COMBINED_LOW_FREQUENCY_SHAPE_SPAN_DB,
+                "anyShapingAboveHalfDb": any_shaping,
+            },
+        }
+
     low_frequency_emphasis_db = ordered_values[0] - ordered_values[-1]
     monotonic_decrease = all(
         ordered_values[index] >= (ordered_values[index + 1] - FR_MONOTONIC_TOLERANCE_DB)
@@ -281,6 +326,7 @@ def evaluate_fr_checks(points_db: dict[str, float]) -> dict:
     emphasis_pass = low_frequency_emphasis_db >= FR_MIN_LOW_FREQUENCY_EMPHASIS_DB
     passed = monotonic_decrease and positive_gain and emphasis_pass
     return {
+        "mode": "boost_only",
         "passed": passed,
         "checks": {
             "monotonicDecreaseWithinTolerance": monotonic_decrease,
@@ -290,6 +336,162 @@ def evaluate_fr_checks(points_db: dict[str, float]) -> dict:
             "monotonicToleranceDb": FR_MONOTONIC_TOLERANCE_DB,
         },
     }
+
+
+def format_fr_failure(provisional: dict) -> str:
+    mode = provisional.get("mode", "unknown")
+    checks = provisional.get("checks", {})
+
+    if mode == "attenuation_only":
+        return (
+            "FR provisional checks failed: "
+            f"LF attenuation {checks.get('lowFrequencyAttenuationDb', 0.0):.2f} dB, "
+            f"monotonic={checks.get('monotonicIncreaseWithinTolerance')}, "
+            f"negativeGain={checks.get('negativeGainAtLfPoints')}"
+        )
+
+    if mode == "boost_and_attenuation":
+        return (
+            "FR provisional checks failed: "
+            f"shape span {checks.get('lowFrequencyShapeSpanDb', 0.0):.2f} dB, "
+            f"anyShaping={checks.get('anyShapingAboveHalfDb')}"
+        )
+
+    return (
+        "FR provisional checks failed: "
+        f"LF emphasis {checks.get('lowFrequencyEmphasisDb', 0.0):.2f} dB, "
+        f"monotonic={checks.get('monotonicDecreaseWithinTolerance')}, "
+        f"positiveGain={checks.get('positiveGainAtLfPoints')}"
+    )
+
+
+def build_reference_case_definition(case_definition: dict, boost_amount: float, attenuation_amount: float) -> dict:
+    reference_case = copy.deepcopy(case_definition)
+    params_by_name = reference_case.setdefault("paramsByName", {})
+    params_by_name["pultec.lf_boost_db"] = boost_amount
+    params_by_name["pultec.lf_atten_db"] = attenuation_amount
+    return reference_case
+
+
+def reference_cache_key(case_definition: dict) -> tuple[float, float, float]:
+    params_by_name = case_definition.get("paramsByName", {})
+    return (
+        float(params_by_name.get("pultec.lf_freq_hz", 0.0)),
+        float(params_by_name.get("pultec.lf_boost_db", 0.0)),
+        float(params_by_name.get("pultec.lf_atten_db", 0.0)),
+    )
+
+
+def render_reference_fr_case(
+    harness_path: pathlib.Path,
+    plugin_path: pathlib.Path,
+    dry_impulse_path: pathlib.Path,
+    output_root: pathlib.Path,
+    sample_rate: int,
+    block_size: int,
+    case_definition: dict,
+    reference_label: str,
+    reference_cache: dict[tuple[float, float, float], dict],
+) -> dict:
+    cache_key = reference_cache_key(case_definition)
+    if cache_key in reference_cache:
+        return reference_cache[cache_key]
+
+    freq_norm, boost_norm, atten_norm = cache_key
+    reference_name = (
+        f"lf_freq_{freq_norm:.7f}__boost_{boost_norm:.7f}__atten_{atten_norm:.7f}__{reference_label}"
+        .replace(".", "p")
+    )
+    reference_root = output_root / "_references" / reference_name
+    reference_root.mkdir(parents=True, exist_ok=True)
+
+    case_path = reference_root / "case.json"
+    case_path.write_text(json.dumps(case_definition, indent=2), encoding="utf-8")
+    render_stdout = reference_root / "render.stdout.txt"
+    render_stderr = reference_root / "render.stderr.txt"
+    render_completed = render_case_to_outdir(
+        harness_path=harness_path,
+        plugin_path=plugin_path,
+        dry_impulse_path=dry_impulse_path,
+        case_path=case_path,
+        output_dir=reference_root / "render",
+        sample_rate=sample_rate,
+        block_size=block_size,
+        stdout_path=render_stdout,
+        stderr_path=render_stderr,
+    )
+    wet_path = reference_root / "render" / "wet.wav"
+    if render_completed.returncode != 0 or not wet_path.exists():
+        raise RuntimeError(f"Reference render failed for {reference_name}")
+
+    analysis = fr_analysis.analyze_frequency_response_files(dry_impulse_path, wet_path)
+    metrics_path = reference_root / "fr_metrics.json"
+    fr_analysis.write_metrics_json(metrics_path, analysis)
+    reference_info = {
+        "label": reference_label,
+        "casePath": str(case_path.resolve()),
+        "metricsPath": str(metrics_path.resolve()),
+        "wetPath": str(wet_path.resolve()),
+        "pointsDb": {label: float(value) for label, value in analysis["pointsDb"].items()},
+    }
+    reference_cache[cache_key] = reference_info
+    return reference_info
+
+
+def build_combined_interaction_comparison(
+    case_name: str,
+    case_root: pathlib.Path,
+    combined_points: dict[str, float],
+    boost_reference: dict,
+    attenuation_reference: dict,
+) -> dict:
+    labels = [f"{int(frequency_hz)}Hz" for frequency_hz in fr_analysis.CHECK_FREQUENCIES_HZ]
+    additive_points = {
+        label: float(boost_reference["pointsDb"][label]) + float(attenuation_reference["pointsDb"][label])
+        for label in labels
+    }
+    deviation_points = {
+        label: float(combined_points[label]) - float(additive_points[label])
+        for label in labels
+    }
+    max_deviation_label = max(labels, key=lambda label: abs(deviation_points[label]))
+    peak_label = max(labels, key=lambda label: combined_points[label])
+    max_abs_deviation_db = abs(deviation_points[max_deviation_label])
+    not_simple_cancellation = max_abs_deviation_db >= FR_MIN_COMBINED_DEVIATION_FROM_SIMPLE_SUM_DB
+    note = (
+        f"Combined peak at {peak_label}; deviation from simple dB-sum is {max_abs_deviation_db:.2f} dB "
+        f"at {max_deviation_label}, which indicates retained boost with tightening below the peak."
+        if not_simple_cancellation
+        else (
+            f"Combined peak at {peak_label}; deviation from simple dB-sum is only {max_abs_deviation_db:.2f} dB "
+            f"at {max_deviation_label}."
+        )
+    )
+    comparison = {
+        "case": case_name,
+        "boostOnly": {
+            "metricsPath": boost_reference["metricsPath"],
+            "pointsDb": boost_reference["pointsDb"],
+        },
+        "attenOnly": {
+            "metricsPath": attenuation_reference["metricsPath"],
+            "pointsDb": attenuation_reference["pointsDb"],
+        },
+        "combined": {
+            "pointsDb": {label: float(value) for label, value in combined_points.items()},
+        },
+        "simpleAdditiveApproximationDb": additive_points,
+        "deviationFromSimpleAdditiveDb": deviation_points,
+        "maxAbsDeviationDb": max_abs_deviation_db,
+        "maxAbsDeviationLabel": max_deviation_label,
+        "notSimpleCancellation": not_simple_cancellation,
+        "minimumDeviationDb": FR_MIN_COMBINED_DEVIATION_FROM_SIMPLE_SUM_DB,
+        "note": note,
+    }
+    comparison_path = case_root / "interaction_comparison.json"
+    comparison_path.write_text(json.dumps(comparison, indent=2), encoding="utf-8")
+    comparison["comparisonPath"] = str(comparison_path.resolve())
+    return comparison
 
 
 def render_reference_case(
@@ -532,8 +734,12 @@ def apply_bypass_analysis(
 
 def apply_fr_analysis(
     results_by_case: dict[str, dict],
+    harness_path: pathlib.Path,
+    plugin_path: pathlib.Path,
     dry_impulse_path: pathlib.Path,
     output_root: pathlib.Path,
+    sample_rate: int,
+    block_size: int,
 ) -> dict | None:
     fr_results = {
         case_name: result
@@ -545,6 +751,7 @@ def apply_fr_analysis(
 
     metrics_index: dict[str, dict] = {}
     failed_cases: list[str] = []
+    reference_cache: dict[tuple[float, float, float], dict] = {}
 
     for case_name, result in fr_results.items():
         if result.get("render", {}).get("exitCode") != 0:
@@ -581,7 +788,7 @@ def apply_fr_analysis(
             fr_analysis.write_metrics_json(metrics_path, analysis)
             fr_analysis.write_curve_csv(curve_path, analysis["frequenciesHz"], analysis["magnitudeDb"])
             fr_analysis.save_plot(plot_path, analysis["frequenciesHz"], analysis["magnitudeDb"])
-            provisional = evaluate_fr_checks(analysis["pointsDb"])
+            provisional = evaluate_fr_checks(result["caseDefinition"], analysis["pointsDb"])
 
             result["analysis"] = {
                 "kind": "frequency_response",
@@ -593,16 +800,48 @@ def apply_fr_analysis(
                 "plotPath": str(plot_path.resolve()),
                 "provisional": provisional,
             }
+            params_by_name = result["caseDefinition"].get("paramsByName", {})
+            boost_amount = float(params_by_name.get("pultec.lf_boost_db", 0.0))
+            attenuation_amount = float(params_by_name.get("pultec.lf_atten_db", 0.0))
+            if boost_amount > 0.0 and attenuation_amount > 0.0:
+                boost_reference = render_reference_fr_case(
+                    harness_path=harness_path,
+                    plugin_path=plugin_path,
+                    dry_impulse_path=dry_impulse_path,
+                    output_root=output_root,
+                    sample_rate=sample_rate,
+                    block_size=block_size,
+                    case_definition=build_reference_case_definition(result["caseDefinition"], boost_amount, 0.0),
+                    reference_label="boost_only",
+                    reference_cache=reference_cache,
+                )
+                attenuation_reference = render_reference_fr_case(
+                    harness_path=harness_path,
+                    plugin_path=plugin_path,
+                    dry_impulse_path=dry_impulse_path,
+                    output_root=output_root,
+                    sample_rate=sample_rate,
+                    block_size=block_size,
+                    case_definition=build_reference_case_definition(result["caseDefinition"], 0.0, attenuation_amount),
+                    reference_label="atten_only",
+                    reference_cache=reference_cache,
+                )
+                interaction_comparison = build_combined_interaction_comparison(
+                    case_name=case_name,
+                    case_root=case_root,
+                    combined_points=result["analysis"]["pointsDb"],
+                    boost_reference=boost_reference,
+                    attenuation_reference=attenuation_reference,
+                )
+                result["analysis"]["interactionComparison"] = interaction_comparison
+
             result["pass"] = bool(provisional["passed"])
+            if "interactionComparison" in result["analysis"]:
+                result["pass"] = result["pass"] and bool(result["analysis"]["interactionComparison"]["notSimpleCancellation"])
             result["message"] = (
                 "OK"
                 if result["pass"]
-                else (
-                    f"FR provisional checks failed: "
-                    f"LF emphasis {provisional['checks']['lowFrequencyEmphasisDb']:.2f} dB, "
-                    f"monotonic={provisional['checks']['monotonicDecreaseWithinTolerance']}, "
-                    f"positiveGain={provisional['checks']['positiveGainAtLfPoints']}"
-                )
+                else format_fr_failure(provisional)
             )
             metrics_index[case_name] = {
                 "case": case_name,
@@ -611,6 +850,9 @@ def apply_fr_analysis(
                 "plotPath": str(plot_path.resolve()),
                 "pointsDb": result["analysis"]["pointsDb"],
                 "shiftSamples": result["analysis"]["shiftSamples"],
+                "interactionComparisonPath": None
+                if "interactionComparison" not in result["analysis"]
+                else result["analysis"]["interactionComparison"]["comparisonPath"],
                 "pass": result["pass"],
             }
             if not result["pass"]:
@@ -699,8 +941,12 @@ def main() -> int:
     )
     fr_summary = apply_fr_analysis(
         results_by_case=results_by_case,
+        harness_path=harness_path,
+        plugin_path=plugin_path,
         dry_impulse_path=dry_impulse_path,
         output_root=output_root,
+        sample_rate=args.sr,
+        block_size=args.bs,
     )
 
     if bypass_summary is not None:

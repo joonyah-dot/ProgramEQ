@@ -1,0 +1,17 @@
+{
+  "warmupMs": 200,
+  "renderSeconds": 2.0,
+  "paramsByName": {
+    "global.true_bypass": 0.0,
+    "pultec.eq_in": 1.0,
+    "pultec.analog_enabled": 0.0,
+    "hpf100.enabled": 0.0,
+    "peq1.enabled": 0.0,
+    "peq2.enabled": 0.0,
+    "pultec.lf_freq_hz": 1.0,
+    "pultec.lf_boost_db": 0.75,
+    "pultec.lf_atten_db": 0.75,
+    "pultec.hf_boost_db": 0.0,
+    "pultec.hf_atten_db": 0.0
+  }
+}

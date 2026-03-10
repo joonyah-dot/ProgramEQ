@@ -46,6 +46,7 @@ private:
     std::atomic<float>* pultecEqInParam = nullptr;
     std::atomic<float>* pultecLfFreqHzParam = nullptr;
     std::atomic<float>* pultecLfBoostDbParam = nullptr;
+    std::atomic<float>* pultecLfAttenDbParam = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ProgramEQAudioProcessor)
 };

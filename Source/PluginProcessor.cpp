@@ -14,6 +14,7 @@ ProgramEQAudioProcessor::ProgramEQAudioProcessor()
     pultecEqInParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecEqIn);
     pultecLfFreqHzParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecLfFreqHz);
     pultecLfBoostDbParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecLfBoostDb);
+    pultecLfAttenDbParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecLfAttenDb);
 }
 
 void ProgramEQAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -38,10 +39,12 @@ void ProgramEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     const auto eqInEnabled = pultecEqInParam == nullptr || pultecEqInParam->load() >= 0.5f;
     const auto frequencySelection = pultecLfFreqHzParam != nullptr ? juce::roundToInt(pultecLfFreqHzParam->load()) : 0;
     const auto boostDb = pultecLfBoostDbParam != nullptr ? pultecLfBoostDbParam->load() : 0.0f;
+    const auto attenuationDb = pultecLfAttenDbParam != nullptr ? pultecLfAttenDbParam->load() : 0.0f;
 
     pultecLfBoost.setEqInEnabled(eqInEnabled);
     pultecLfBoost.setFrequencySelection(frequencySelection);
     pultecLfBoost.setBoostDecibels(boostDb);
+    pultecLfBoost.setAttenuationDecibels(attenuationDb);
     pultecLfBoost.process(buffer);
 }
 
