@@ -15,10 +15,13 @@ ProgramEQAudioProcessor::ProgramEQAudioProcessor()
     pultecLfFreqHzParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecLfFreqHz);
     pultecLfBoostDbParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecLfBoostDb);
     pultecLfAttenDbParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecLfAttenDb);
+    pultecHfBoostFreqKhzParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecHfBoostFreqKhz);
+    pultecHfBoostDbParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecHfBoostDb);
 }
 
 void ProgramEQAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    pultecHfBoost.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
     pultecLfBoost.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
 }
 
@@ -40,12 +43,19 @@ void ProgramEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     const auto frequencySelection = pultecLfFreqHzParam != nullptr ? juce::roundToInt(pultecLfFreqHzParam->load()) : 0;
     const auto boostDb = pultecLfBoostDbParam != nullptr ? pultecLfBoostDbParam->load() : 0.0f;
     const auto attenuationDb = pultecLfAttenDbParam != nullptr ? pultecLfAttenDbParam->load() : 0.0f;
+    const auto hfFrequencySelection = pultecHfBoostFreqKhzParam != nullptr ? juce::roundToInt(pultecHfBoostFreqKhzParam->load()) : 0;
+    const auto hfBoostDb = pultecHfBoostDbParam != nullptr ? pultecHfBoostDbParam->load() : 0.0f;
 
     pultecLfBoost.setEqInEnabled(eqInEnabled);
     pultecLfBoost.setFrequencySelection(frequencySelection);
     pultecLfBoost.setBoostDecibels(boostDb);
     pultecLfBoost.setAttenuationDecibels(attenuationDb);
     pultecLfBoost.process(buffer);
+
+    pultecHfBoost.setEqInEnabled(eqInEnabled);
+    pultecHfBoost.setFrequencySelection(hfFrequencySelection);
+    pultecHfBoost.setBoostDecibels(hfBoostDb);
+    pultecHfBoost.process(buffer);
 }
 
 juce::AudioProcessorEditor* ProgramEQAudioProcessor::createEditor()

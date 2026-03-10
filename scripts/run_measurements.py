@@ -5,6 +5,7 @@ import argparse
 import copy
 import datetime as dt
 import json
+import math
 import pathlib
 import subprocess
 import sys
@@ -27,6 +28,12 @@ FR_MONOTONIC_TOLERANCE_DB = 0.5
 FR_MIN_LOW_FREQUENCY_ATTENUATION_DB = 2.0
 FR_MIN_COMBINED_LOW_FREQUENCY_SHAPE_SPAN_DB = 0.5
 FR_MIN_COMBINED_DEVIATION_FROM_SIMPLE_SUM_DB = 0.25
+HF_BOOST_FREQUENCY_CHOICES_HZ = [3000.0, 4000.0, 5000.0, 8000.0, 10000.0, 12000.0, 16000.0]
+HF_MIN_PEAK_GAIN_DB = 3.0
+HF_PEAK_TRACKING_TOLERANCE_OCTAVES = 0.35
+HF_REFERENCE_SAMPLE_HZ = 1000.0
+HF_PLOT_MIN_HZ = 500.0
+HF_PLOT_MAX_HZ = 22000.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -273,14 +280,67 @@ def run_case(
     return result
 
 
-def evaluate_fr_checks(case_definition: dict, points_db: dict[str, float]) -> dict:
+def hf_frequency_selection_to_hz(normalized_value: float) -> float:
+    clamped = max(0.0, min(1.0, float(normalized_value)))
+    index = int(round(clamped * float(len(HF_BOOST_FREQUENCY_CHOICES_HZ) - 1)))
+    return HF_BOOST_FREQUENCY_CHOICES_HZ[index]
+
+
+def write_fr_metrics_json(metrics_path: pathlib.Path, analysis: dict, provisional: dict) -> None:
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_payload = fr_analysis.serialise_metrics(analysis)
+    metrics_payload["provisional"] = provisional
+    metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
+
+
+def evaluate_fr_checks(case_definition: dict, analysis: dict) -> dict:
+    points_db = analysis["pointsDb"]
     ordered_labels = [f"{int(frequency_hz)}Hz" for frequency_hz in fr_analysis.CHECK_FREQUENCIES_HZ]
     ordered_values = [float(points_db[label]) for label in ordered_labels]
     params_by_name = case_definition.get("paramsByName", {})
     boost_amount = float(params_by_name.get("pultec.lf_boost_db", 0.0))
     attenuation_amount = float(params_by_name.get("pultec.lf_atten_db", 0.0))
+    hf_boost_amount = float(params_by_name.get("pultec.hf_boost_db", 0.0))
     boost_enabled = boost_amount > 0.0
     attenuation_enabled = attenuation_amount > 0.0
+    hf_boost_enabled = hf_boost_amount > 0.0
+
+    if hf_boost_enabled and not boost_enabled and not attenuation_enabled:
+        target_frequency_hz = hf_frequency_selection_to_hz(float(params_by_name.get("pultec.hf_boost_freq_khz", 0.0)))
+        peak = fr_analysis.find_peak_in_band(
+            analysis["frequenciesHz"],
+            analysis["magnitudeDb"],
+            max(HF_PLOT_MIN_HZ, target_frequency_hz * 0.5),
+            min(HF_PLOT_MAX_HZ, target_frequency_hz * 1.75),
+        )
+        sample_points = fr_analysis.sample_points_at_frequencies(
+            analysis["frequenciesHz"],
+            analysis["magnitudeDb"],
+            [HF_REFERENCE_SAMPLE_HZ, target_frequency_hz],
+        )
+        reference_magnitude_db = float(sample_points[fr_analysis.format_frequency_label(HF_REFERENCE_SAMPLE_HZ)])
+        target_magnitude_db = float(sample_points[fr_analysis.format_frequency_label(target_frequency_hz)])
+        tracking_error_octaves = abs(math.log2(peak["frequencyHz"] / target_frequency_hz))
+        peak_prominence_db = float(peak["magnitudeDb"]) - reference_magnitude_db
+        measurable_peak = peak_prominence_db >= HF_MIN_PEAK_GAIN_DB
+        sensible_tracking = tracking_error_octaves <= HF_PEAK_TRACKING_TOLERANCE_OCTAVES
+        passed = measurable_peak and sensible_tracking
+        return {
+            "mode": "hf_boost_only",
+            "passed": passed,
+            "checks": {
+                "targetFrequencyHz": target_frequency_hz,
+                "peakFrequencyHz": float(peak["frequencyHz"]),
+                "peakMagnitudeDb": float(peak["magnitudeDb"]),
+                "targetMagnitudeDb": target_magnitude_db,
+                "referenceMagnitudeDb": reference_magnitude_db,
+                "peakProminenceDb": peak_prominence_db,
+                "minimumPeakGainDb": HF_MIN_PEAK_GAIN_DB,
+                "trackingErrorOctaves": tracking_error_octaves,
+                "maximumTrackingErrorOctaves": HF_PEAK_TRACKING_TOLERANCE_OCTAVES,
+                "samplePointsDb": sample_points,
+            },
+        }
 
     if attenuation_enabled and not boost_enabled:
         low_frequency_attenuation_db = ordered_values[-1] - ordered_values[0]
@@ -341,6 +401,15 @@ def evaluate_fr_checks(case_definition: dict, points_db: dict[str, float]) -> di
 def format_fr_failure(provisional: dict) -> str:
     mode = provisional.get("mode", "unknown")
     checks = provisional.get("checks", {})
+
+    if mode == "hf_boost_only":
+        return (
+            "FR provisional checks failed: "
+            f"target {checks.get('targetFrequencyHz', 0.0):.0f} Hz, "
+            f"peak {checks.get('peakFrequencyHz', 0.0):.0f} Hz, "
+            f"prominence {checks.get('peakProminenceDb', 0.0):.2f} dB, "
+            f"trackingErrorOctaves={checks.get('trackingErrorOctaves', 0.0):.3f}"
+        )
 
     if mode == "attenuation_only":
         return (
@@ -785,10 +854,24 @@ def apply_fr_analysis(
                 dry_impulse_path,
                 wet_path,
             )
-            fr_analysis.write_metrics_json(metrics_path, analysis)
+            provisional = evaluate_fr_checks(result["caseDefinition"], analysis)
+            write_fr_metrics_json(metrics_path, analysis, provisional)
             fr_analysis.write_curve_csv(curve_path, analysis["frequenciesHz"], analysis["magnitudeDb"])
-            fr_analysis.save_plot(plot_path, analysis["frequenciesHz"], analysis["magnitudeDb"])
-            provisional = evaluate_fr_checks(result["caseDefinition"], analysis["pointsDb"])
+            plot_min_hz = fr_analysis.DEFAULT_PLOT_MIN_HZ
+            plot_max_hz = None
+            plot_title = "Frequency Response Check"
+            if provisional["mode"] == "hf_boost_only":
+                plot_min_hz = HF_PLOT_MIN_HZ
+                plot_max_hz = HF_PLOT_MAX_HZ
+                plot_title = "HF Boost Frequency Response Check"
+            fr_analysis.save_plot(
+                plot_path,
+                analysis["frequenciesHz"],
+                analysis["magnitudeDb"],
+                x_min_hz=plot_min_hz,
+                x_max_hz=plot_max_hz,
+                title=plot_title,
+            )
 
             result["analysis"] = {
                 "kind": "frequency_response",
@@ -850,6 +933,7 @@ def apply_fr_analysis(
                 "plotPath": str(plot_path.resolve()),
                 "pointsDb": result["analysis"]["pointsDb"],
                 "shiftSamples": result["analysis"]["shiftSamples"],
+                "provisional": provisional,
                 "interactionComparisonPath": None
                 if "interactionComparison" not in result["analysis"]
                 else result["analysis"]["interactionComparison"]["comparisonPath"],

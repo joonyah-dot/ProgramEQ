@@ -19,6 +19,9 @@ except ModuleNotFoundError:
 
 CHECK_FREQUENCIES_HZ = [20.0, 30.0, 60.0, 100.0, 200.0]
 FFT_EPSILON = 1.0e-12
+DEFAULT_PLOT_MIN_HZ = 10.0
+DEFAULT_PLOT_MAX_HZ = 20000.0
+PLOT_PADDING_DB = 3.0
 
 
 def read_wav_mono(path: pathlib.Path) -> tuple[np.ndarray, int]:
@@ -83,12 +86,47 @@ def compute_frequency_response(signal: np.ndarray, sample_rate: int) -> tuple[np
     return frequencies, magnitude_db
 
 
-def sample_points(frequencies: np.ndarray, magnitude_db: np.ndarray) -> dict[str, float]:
+def format_frequency_label(frequency_hz: float) -> str:
+    rounded = round(float(frequency_hz))
+    if abs(float(frequency_hz) - rounded) < 1.0e-6:
+        return f"{int(rounded)}Hz"
+    return f"{float(frequency_hz):.1f}Hz"
+
+
+def sample_points_at_frequencies(
+    frequencies: np.ndarray,
+    magnitude_db: np.ndarray,
+    frequencies_hz: list[float],
+) -> dict[str, float]:
     points: dict[str, float] = {}
-    for frequency_hz in CHECK_FREQUENCIES_HZ:
+    for frequency_hz in frequencies_hz:
         index = int(np.argmin(np.abs(frequencies - frequency_hz)))
-        points[f"{int(frequency_hz)}Hz"] = float(magnitude_db[index])
+        points[format_frequency_label(frequency_hz)] = float(magnitude_db[index])
     return points
+
+
+def sample_points(frequencies: np.ndarray, magnitude_db: np.ndarray) -> dict[str, float]:
+    return sample_points_at_frequencies(frequencies, magnitude_db, CHECK_FREQUENCIES_HZ)
+
+
+def find_peak_in_band(
+    frequencies: np.ndarray,
+    magnitude_db: np.ndarray,
+    min_frequency_hz: float,
+    max_frequency_hz: float,
+) -> dict[str, float]:
+    mask = (frequencies >= min_frequency_hz) & (frequencies <= max_frequency_hz)
+    if not np.any(mask):
+        raise ValueError(f"No FFT bins available in band {min_frequency_hz} Hz .. {max_frequency_hz} Hz")
+
+    band_indices = np.flatnonzero(mask)
+    peak_relative_index = int(np.argmax(magnitude_db[mask]))
+    peak_index = int(band_indices[peak_relative_index])
+    return {
+        "frequencyHz": float(frequencies[peak_index]),
+        "magnitudeDb": float(magnitude_db[peak_index]),
+        "index": peak_index,
+    }
 
 
 def analyze_frequency_response_arrays(dry: np.ndarray, wet: np.ndarray, sample_rate: int) -> dict:
@@ -116,22 +154,45 @@ def analyze_frequency_response_files(dry_path: pathlib.Path, wet_path: pathlib.P
     return analyze_frequency_response_arrays(dry, wet, wet_sample_rate)
 
 
-def save_plot(out_path: pathlib.Path, frequencies: np.ndarray, magnitude_db: np.ndarray) -> None:
+def resolve_plot_range(frequencies: np.ndarray, x_min_hz: float, x_max_hz: float | None) -> tuple[float, float]:
+    effective_max_hz = float(frequencies[-1]) if frequencies.size > 0 else DEFAULT_PLOT_MAX_HZ
+    max_hz = min(DEFAULT_PLOT_MAX_HZ, effective_max_hz) if x_max_hz is None else min(float(x_max_hz), effective_max_hz)
+    min_hz = max(DEFAULT_PLOT_MIN_HZ, float(x_min_hz))
+    if max_hz <= min_hz:
+        max_hz = max(min_hz * 2.0, min(DEFAULT_PLOT_MAX_HZ, effective_max_hz))
+    return min_hz, max_hz
+
+
+def save_plot(
+    out_path: pathlib.Path,
+    frequencies: np.ndarray,
+    magnitude_db: np.ndarray,
+    x_min_hz: float = DEFAULT_PLOT_MIN_HZ,
+    x_max_hz: float | None = None,
+    title: str = "Frequency Response Check",
+) -> None:
+    plot_min_hz, plot_max_hz = resolve_plot_range(frequencies, x_min_hz, x_max_hz)
+
     if plt is None:
-        save_simple_png(out_path, frequencies, magnitude_db)
+        save_simple_png(out_path, frequencies, magnitude_db, plot_min_hz, plot_max_hz, title)
         return
 
+    mask = (frequencies >= plot_min_hz) & (frequencies <= plot_max_hz)
+    if not np.any(mask):
+        raise ValueError(f"No FFT bins available in plot range {plot_min_hz} Hz .. {plot_max_hz} Hz")
+
+    plot_magnitude = magnitude_db[mask]
     plt.figure(figsize=(8, 4.5))
     plt.semilogx(frequencies[1:], magnitude_db[1:], linewidth=1.5)
-    plt.xlim(10.0, 500.0)
+    plt.xlim(plot_min_hz, plot_max_hz)
     plt.ylim(
-        np.min(magnitude_db[(frequencies >= 10.0) & (frequencies <= 500.0)]) - 3.0,
-        np.max(magnitude_db[(frequencies >= 10.0) & (frequencies <= 500.0)]) + 3.0,
+        np.min(plot_magnitude) - PLOT_PADDING_DB,
+        np.max(plot_magnitude) + PLOT_PADDING_DB,
     )
     plt.grid(True, which="both", linestyle="--", linewidth=0.5)
     plt.xlabel("Frequency (Hz)")
     plt.ylabel("Magnitude (dB)")
-    plt.title("Quick LF Frequency Response Check")
+    plt.title(title)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close()
@@ -181,7 +242,14 @@ def draw_line(image: np.ndarray, x0: int, y0: int, x1: int, y1: int, colour: tup
             y0 += sy
 
 
-def save_simple_png(out_path: pathlib.Path, frequencies: np.ndarray, magnitude_db: np.ndarray) -> None:
+def save_simple_png(
+    out_path: pathlib.Path,
+    frequencies: np.ndarray,
+    magnitude_db: np.ndarray,
+    x_min_hz: float,
+    x_max_hz: float,
+    title: str,
+) -> None:
     width = 1000
     height = 600
     margin_left = 70
@@ -191,14 +259,17 @@ def save_simple_png(out_path: pathlib.Path, frequencies: np.ndarray, magnitude_d
     plot_width = width - margin_left - margin_right
     plot_height = height - margin_top - margin_bottom
 
-    mask = (frequencies >= 10.0) & (frequencies <= 500.0)
+    mask = (frequencies >= x_min_hz) & (frequencies <= x_max_hz)
     plot_freqs = frequencies[mask]
     plot_mag = magnitude_db[mask]
 
-    y_min = float(np.min(plot_mag) - 3.0)
-    y_max = float(np.max(plot_mag) + 3.0)
-    x_min = math.log10(10.0)
-    x_max = math.log10(500.0)
+    if plot_freqs.size == 0:
+        raise ValueError(f"No FFT bins available in plot range {x_min_hz} Hz .. {x_max_hz} Hz")
+
+    y_min = float(np.min(plot_mag) - PLOT_PADDING_DB)
+    y_max = float(np.max(plot_mag) + PLOT_PADDING_DB)
+    x_min = math.log10(x_min_hz)
+    x_max = math.log10(x_max_hz)
 
     image = np.full((height, width, 3), 255, dtype=np.uint8)
     axis_colour = (180, 180, 180)

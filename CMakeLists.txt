@@ -49,6 +49,8 @@ target_compile_definitions(
 target_sources(
     ProgramEQ
     PRIVATE
+    Source/DSP/PultecHfBoost.cpp
+    Source/DSP/PultecHfBoost.h
     Source/DSP/PultecLfBoost.cpp
     Source/DSP/PultecLfBoost.h
     Source/Parameters.cpp

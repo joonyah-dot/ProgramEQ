@@ -8,6 +8,17 @@
       "30": 0.3333333,
       "60": 0.6666667,
       "100": 1.0
+    },
+    "hfBoostFreqParamId": "pultec.hf_boost_freq_khz",
+    "hfBoostFreqNormalization": "choice_index / (choice_count - 1)",
+    "hfBoostFreqChoicesKhz": {
+      "3": 0.0,
+      "4": 0.1666667,
+      "5": 0.3333333,
+      "8": 0.5,
+      "10": 0.6666667,
+      "12": 0.8333333,
+      "16": 1.0
     }
   },
   "groups": {
@@ -30,7 +41,14 @@
       "fr_pultec_lf_atten_20hz_100pct",
       "fr_pultec_lf_atten_30hz_100pct",
       "fr_pultec_lf_atten_60hz_100pct",
-      "fr_pultec_lf_atten_100hz_100pct"
+      "fr_pultec_lf_atten_100hz_100pct",
+      "fr_pultec_hf_boost_3khz_75pct",
+      "fr_pultec_hf_boost_4khz_75pct",
+      "fr_pultec_hf_boost_5khz_75pct",
+      "fr_pultec_hf_boost_8khz_75pct",
+      "fr_pultec_hf_boost_10khz_75pct",
+      "fr_pultec_hf_boost_12khz_75pct",
+      "fr_pultec_hf_boost_16khz_75pct"
     ],
     "bypass": [
       "true_bypass_on",

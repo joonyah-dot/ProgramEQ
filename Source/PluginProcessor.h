@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 
+#include "DSP/PultecHfBoost.h"
 #include "DSP/PultecLfBoost.h"
 #include "Parameters.h"
 
@@ -40,6 +41,7 @@ public:
 
 private:
     APVTS apvts;
+    ProgramEQ::DSP::PultecHfBoost pultecHfBoost;
     ProgramEQ::DSP::PultecLfBoost pultecLfBoost;
 
     std::atomic<float>* trueBypassParam = nullptr;
@@ -47,6 +49,8 @@ private:
     std::atomic<float>* pultecLfFreqHzParam = nullptr;
     std::atomic<float>* pultecLfBoostDbParam = nullptr;
     std::atomic<float>* pultecLfAttenDbParam = nullptr;
+    std::atomic<float>* pultecHfBoostFreqKhzParam = nullptr;
+    std::atomic<float>* pultecHfBoostDbParam = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ProgramEQAudioProcessor)
 };

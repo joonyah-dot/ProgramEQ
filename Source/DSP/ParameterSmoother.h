@@ -29,6 +29,16 @@ public:
         return smoother.getNextValue();
     }
 
+    float getCurrentValue() const noexcept
+    {
+        return smoother.getCurrentValue();
+    }
+
+    bool isSmoothing() const noexcept
+    {
+        return smoother.isSmoothing();
+    }
+
 private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoother;
 };
