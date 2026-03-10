@@ -4,6 +4,14 @@
 
 namespace ProgramEQ::DSP
 {
+namespace
+{
+float interpolateLogarithmic(float startValue, float endValue, float t) noexcept
+{
+    const auto clampedT = juce::jlimit(0.0f, 1.0f, t);
+    return std::exp(std::log(startValue) + (std::log(endValue) - std::log(startValue)) * clampedT);
+}
+} // namespace
 
 void PultecHfBoostBiquadChannel::reset() noexcept
 {
@@ -31,11 +39,17 @@ void PultecHfBoost::prepare(double sampleRate, int maximumBlockSize, int numChan
     currentSampleRate = sampleRate;
     currentFrequencyHz = selectionToFrequencyHz(currentFrequencySelection);
     boostDecibelSmoother.prepare(sampleRate, smoothingTimeSeconds, clampBoostDecibels(currentBoostDecibels));
+    bandwidthNormalizedSmoother.prepare(sampleRate, smoothingTimeSeconds, clampBandwidthNormalized(currentBandwidthNormalized));
     lastConfiguredBoostDecibels = -1.0f;
+    lastConfiguredBandwidthNormalized = -1.0f;
     lastAppliedBoostDecibels = -1.0f;
+    lastAppliedBandwidthQ = -1.0f;
     reset();
     updateConfiguration();
-    applyCoefficients(boostDecibelSmoother.getCurrentValue());
+    applyCoefficients(
+        boostDecibelSmoother.getCurrentValue(),
+        bandwidthNormalizedToQ(bandwidthNormalizedSmoother.getCurrentValue())
+    );
 }
 
 void PultecHfBoost::reset() noexcept
@@ -44,6 +58,7 @@ void PultecHfBoost::reset() noexcept
         channel.reset();
 
     boostDecibelSmoother.reset(clampBoostDecibels(currentBoostDecibels));
+    bandwidthNormalizedSmoother.reset(clampBandwidthNormalized(currentBandwidthNormalized));
 }
 
 void PultecHfBoost::setEqInEnabled(bool shouldApply) noexcept
@@ -61,6 +76,11 @@ void PultecHfBoost::setBoostDecibels(float boostDb) noexcept
     currentBoostDecibels = boostDb;
 }
 
+void PultecHfBoost::setBandwidthNormalized(float bandwidthNormalized) noexcept
+{
+    currentBandwidthNormalized = bandwidthNormalized;
+}
+
 void PultecHfBoost::process(juce::AudioBuffer<float>& buffer) noexcept
 {
     updateConfiguration();
@@ -74,8 +94,9 @@ void PultecHfBoost::process(juce::AudioBuffer<float>& buffer) noexcept
     for (int sampleIndex = 0; sampleIndex < numSamples; ++sampleIndex)
     {
         const auto boostDb = boostDecibelSmoother.getNextValue();
-        if (boostDb != lastAppliedBoostDecibels)
-            applyCoefficients(boostDb);
+        const auto bandwidthQ = bandwidthNormalizedToQ(bandwidthNormalizedSmoother.getNextValue());
+        if (boostDb != lastAppliedBoostDecibels || bandwidthQ != lastAppliedBandwidthQ)
+            applyCoefficients(boostDb, bandwidthQ);
 
         for (int channelIndex = 0; channelIndex < numChannels; ++channelIndex)
         {
@@ -113,6 +134,7 @@ void PultecHfBoost::updateConfiguration() noexcept
     {
         currentFrequencyHz = newFrequencyHz;
         lastAppliedBoostDecibels = -1.0f;
+        lastAppliedBandwidthQ = -1.0f;
     }
 
     const auto clampedBoostDb = clampBoostDecibels(currentBoostDecibels);
@@ -121,20 +143,42 @@ void PultecHfBoost::updateConfiguration() noexcept
         boostDecibelSmoother.setTargetValue(clampedBoostDb);
         lastConfiguredBoostDecibels = clampedBoostDb;
     }
+
+    const auto clampedBandwidthNormalized = clampBandwidthNormalized(currentBandwidthNormalized);
+    if (clampedBandwidthNormalized != lastConfiguredBandwidthNormalized)
+    {
+        bandwidthNormalizedSmoother.setTargetValue(clampedBandwidthNormalized);
+        lastConfiguredBandwidthNormalized = clampedBandwidthNormalized;
+    }
 }
 
-void PultecHfBoost::applyCoefficients(float boostDb) noexcept
+void PultecHfBoost::applyCoefficients(float boostDb, float q) noexcept
 {
-    const auto coefficients = makePeakCoefficients(currentSampleRate, currentFrequencyHz, boostDb, fixedBandwidthQ);
+    const auto coefficients = makePeakCoefficients(currentSampleRate, currentFrequencyHz, boostDb, q);
     for (auto& channel : channels)
         channel.setCoefficients(coefficients);
 
     lastAppliedBoostDecibels = boostDb;
+    lastAppliedBandwidthQ = q;
 }
 
 float PultecHfBoost::clampBoostDecibels(float boostDb) noexcept
 {
     return juce::jlimit(0.0f, 18.0f, boostDb);
+}
+
+float PultecHfBoost::clampBandwidthNormalized(float bandwidthNormalized) noexcept
+{
+    return juce::jlimit(0.0f, 1.0f, bandwidthNormalized);
+}
+
+float PultecHfBoost::bandwidthNormalizedToQ(float bandwidthNormalized) noexcept
+{
+    const auto clampedBandwidth = clampBandwidthNormalized(bandwidthNormalized);
+    if (clampedBandwidth <= 0.5f)
+        return interpolateLogarithmic(sharpBandwidthQ, midBandwidthQ, clampedBandwidth * 2.0f);
+
+    return interpolateLogarithmic(midBandwidthQ, broadBandwidthQ, (clampedBandwidth - 0.5f) * 2.0f);
 }
 
 PultecHfBoostBiquadCoefficients PultecHfBoost::makePeakCoefficients(double sampleRate, float frequencyHz, float boostDb, float q) noexcept

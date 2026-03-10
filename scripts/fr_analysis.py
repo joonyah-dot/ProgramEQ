@@ -129,6 +129,78 @@ def find_peak_in_band(
     }
 
 
+def interpolate_crossing_frequency(
+    frequency_a_hz: float,
+    magnitude_a_db: float,
+    frequency_b_hz: float,
+    magnitude_b_db: float,
+    target_magnitude_db: float,
+) -> float:
+    if abs(magnitude_b_db - magnitude_a_db) < 1.0e-9:
+        return float(frequency_b_hz)
+
+    ratio = (target_magnitude_db - magnitude_a_db) / (magnitude_b_db - magnitude_a_db)
+    clamped_ratio = min(1.0, max(0.0, float(ratio)))
+    log_frequency_a = math.log(float(frequency_a_hz))
+    log_frequency_b = math.log(float(frequency_b_hz))
+    return float(math.exp(log_frequency_a + (log_frequency_b - log_frequency_a) * clamped_ratio))
+
+
+def measure_peak_width(
+    frequencies: np.ndarray,
+    magnitude_db: np.ndarray,
+    peak_index: int,
+    drop_db: float = 3.0,
+) -> dict[str, float | None]:
+    peak_index = int(peak_index)
+    peak_frequency_hz = float(frequencies[peak_index])
+    peak_magnitude_db = float(magnitude_db[peak_index])
+    target_magnitude_db = peak_magnitude_db - float(drop_db)
+
+    lower_frequency_hz: float | None = None
+    for index in range(peak_index, 0, -1):
+        previous_index = index - 1
+        if float(magnitude_db[previous_index]) <= target_magnitude_db <= float(magnitude_db[index]):
+            lower_frequency_hz = interpolate_crossing_frequency(
+                float(frequencies[index]),
+                float(magnitude_db[index]),
+                float(frequencies[previous_index]),
+                float(magnitude_db[previous_index]),
+                target_magnitude_db,
+            )
+            break
+
+    upper_frequency_hz: float | None = None
+    for index in range(peak_index, len(frequencies) - 1):
+        next_index = index + 1
+        if float(magnitude_db[next_index]) <= target_magnitude_db <= float(magnitude_db[index]):
+            upper_frequency_hz = interpolate_crossing_frequency(
+                float(frequencies[index]),
+                float(magnitude_db[index]),
+                float(frequencies[next_index]),
+                float(magnitude_db[next_index]),
+                target_magnitude_db,
+            )
+            break
+
+    width_hz = None
+    width_octaves = None
+    if lower_frequency_hz is not None and upper_frequency_hz is not None and lower_frequency_hz > 0.0:
+        width_hz = float(upper_frequency_hz - lower_frequency_hz)
+        width_octaves = float(math.log2(upper_frequency_hz / lower_frequency_hz))
+
+    return {
+        "peakFrequencyHz": peak_frequency_hz,
+        "peakMagnitudeDb": peak_magnitude_db,
+        "targetMagnitudeDb": target_magnitude_db,
+        "lowerFrequencyHz": lower_frequency_hz,
+        "upperFrequencyHz": upper_frequency_hz,
+        "widthHz": width_hz,
+        "widthOctaves": width_octaves,
+        "dropDb": float(drop_db),
+    }
+
+
 def analyze_frequency_response_arrays(dry: np.ndarray, wet: np.ndarray, sample_rate: int) -> dict:
     aligned_wet, shift_samples = align_impulse_with_shift(dry, wet)
     aligned_dry = dry[: aligned_wet.shape[0]]

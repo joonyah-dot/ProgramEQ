@@ -19,6 +19,11 @@
       "10": 0.6666667,
       "12": 0.8333333,
       "16": 1.0
+    },
+    "hfBandwidthNormalized": {
+      "sharp": 0.0,
+      "mid": 0.5,
+      "broad": 1.0
     }
   },
   "groups": {
@@ -48,7 +53,16 @@
       "fr_pultec_hf_boost_8khz_75pct",
       "fr_pultec_hf_boost_10khz_75pct",
       "fr_pultec_hf_boost_12khz_75pct",
-      "fr_pultec_hf_boost_16khz_75pct"
+      "fr_pultec_hf_boost_16khz_75pct",
+      "fr_pultec_hf_boost_5khz_75pct_bw_sharp",
+      "fr_pultec_hf_boost_5khz_75pct_bw_mid",
+      "fr_pultec_hf_boost_5khz_75pct_bw_broad",
+      "fr_pultec_hf_boost_8khz_75pct_bw_sharp",
+      "fr_pultec_hf_boost_8khz_75pct_bw_mid",
+      "fr_pultec_hf_boost_8khz_75pct_bw_broad",
+      "fr_pultec_hf_boost_12khz_75pct_bw_sharp",
+      "fr_pultec_hf_boost_12khz_75pct_bw_mid",
+      "fr_pultec_hf_boost_12khz_75pct_bw_broad"
     ],
     "bypass": [
       "true_bypass_on",

@@ -34,6 +34,14 @@ HF_PEAK_TRACKING_TOLERANCE_OCTAVES = 0.35
 HF_REFERENCE_SAMPLE_HZ = 1000.0
 HF_PLOT_MIN_HZ = 500.0
 HF_PLOT_MAX_HZ = 22000.0
+HF_WIDTH_DROP_DB = 3.0
+HF_BANDWIDTH_LABEL_VALUES = {
+    "sharp": 0.0,
+    "mid": 0.5,
+    "broad": 1.0,
+}
+HF_BANDWIDTH_VALUE_TOLERANCE = 1.0e-4
+HF_BANDWIDTH_ORDER_MARGIN_OCTAVES = 0.02
 
 
 def parse_args() -> argparse.Namespace:
@@ -286,6 +294,13 @@ def hf_frequency_selection_to_hz(normalized_value: float) -> float:
     return HF_BOOST_FREQUENCY_CHOICES_HZ[index]
 
 
+def hf_bandwidth_value_to_label(normalized_value: float) -> str | None:
+    for label, reference_value in HF_BANDWIDTH_LABEL_VALUES.items():
+        if abs(float(normalized_value) - reference_value) <= HF_BANDWIDTH_VALUE_TOLERANCE:
+            return label
+    return None
+
+
 def write_fr_metrics_json(metrics_path: pathlib.Path, analysis: dict, provisional: dict) -> None:
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_payload = fr_analysis.serialise_metrics(analysis)
@@ -301,6 +316,7 @@ def evaluate_fr_checks(case_definition: dict, analysis: dict) -> dict:
     boost_amount = float(params_by_name.get("pultec.lf_boost_db", 0.0))
     attenuation_amount = float(params_by_name.get("pultec.lf_atten_db", 0.0))
     hf_boost_amount = float(params_by_name.get("pultec.hf_boost_db", 0.0))
+    hf_bandwidth_normalized = float(params_by_name.get("pultec.hf_bandwidth", 0.5))
     boost_enabled = boost_amount > 0.0
     attenuation_enabled = attenuation_amount > 0.0
     hf_boost_enabled = hf_boost_amount > 0.0
@@ -312,6 +328,12 @@ def evaluate_fr_checks(case_definition: dict, analysis: dict) -> dict:
             analysis["magnitudeDb"],
             max(HF_PLOT_MIN_HZ, target_frequency_hz * 0.5),
             min(HF_PLOT_MAX_HZ, target_frequency_hz * 1.75),
+        )
+        width_metrics = fr_analysis.measure_peak_width(
+            analysis["frequenciesHz"],
+            analysis["magnitudeDb"],
+            peak["index"],
+            drop_db=HF_WIDTH_DROP_DB,
         )
         sample_points = fr_analysis.sample_points_at_frequencies(
             analysis["frequenciesHz"],
@@ -338,6 +360,13 @@ def evaluate_fr_checks(case_definition: dict, analysis: dict) -> dict:
                 "minimumPeakGainDb": HF_MIN_PEAK_GAIN_DB,
                 "trackingErrorOctaves": tracking_error_octaves,
                 "maximumTrackingErrorOctaves": HF_PEAK_TRACKING_TOLERANCE_OCTAVES,
+                "bandwidthNormalized": hf_bandwidth_normalized,
+                "bandwidthLabel": hf_bandwidth_value_to_label(hf_bandwidth_normalized),
+                "widthDropDb": HF_WIDTH_DROP_DB,
+                "widthLowerFrequencyHz": width_metrics["lowerFrequencyHz"],
+                "widthUpperFrequencyHz": width_metrics["upperFrequencyHz"],
+                "widthHz": width_metrics["widthHz"],
+                "widthOctaves": width_metrics["widthOctaves"],
                 "samplePointsDb": sample_points,
             },
         }
@@ -408,7 +437,8 @@ def format_fr_failure(provisional: dict) -> str:
             f"target {checks.get('targetFrequencyHz', 0.0):.0f} Hz, "
             f"peak {checks.get('peakFrequencyHz', 0.0):.0f} Hz, "
             f"prominence {checks.get('peakProminenceDb', 0.0):.2f} dB, "
-            f"trackingErrorOctaves={checks.get('trackingErrorOctaves', 0.0):.3f}"
+            f"trackingErrorOctaves={checks.get('trackingErrorOctaves', 0.0):.3f}, "
+            f"widthOctaves={checks.get('widthOctaves')}"
         )
 
     if mode == "attenuation_only":
@@ -801,6 +831,93 @@ def apply_bypass_analysis(
     }
 
 
+def build_hf_bandwidth_comparisons(
+    output_root: pathlib.Path,
+    fr_results: dict[str, dict],
+    metrics_index: dict[str, dict],
+) -> dict | None:
+    grouped_cases: dict[int, dict[str, tuple[str, dict]]] = {}
+    for case_name, result in fr_results.items():
+        if "_bw_" not in case_name:
+            continue
+
+        provisional = result.get("analysis", {}).get("provisional")
+        if provisional is None or provisional.get("mode") != "hf_boost_only":
+            continue
+
+        checks = provisional.get("checks", {})
+        bandwidth_label = checks.get("bandwidthLabel")
+        width_octaves = checks.get("widthOctaves")
+        target_frequency_hz = checks.get("targetFrequencyHz")
+        if bandwidth_label is None or width_octaves is None or target_frequency_hz is None:
+            continue
+
+        grouped_cases.setdefault(int(round(float(target_frequency_hz))), {})[str(bandwidth_label)] = (case_name, checks)
+
+    if not grouped_cases:
+        return None
+
+    comparisons: dict[str, dict] = {}
+    for target_frequency_hz, variants in grouped_cases.items():
+        comparison = {
+            "targetFrequencyHz": float(target_frequency_hz),
+            "cases": {},
+            "minimumWidthOrderMarginOctaves": HF_BANDWIDTH_ORDER_MARGIN_OCTAVES,
+            "pass": False,
+            "message": "",
+        }
+
+        missing_labels = [label for label in ("sharp", "mid", "broad") if label not in variants]
+        if missing_labels:
+            comparison["message"] = f"Missing bandwidth cases: {', '.join(missing_labels)}"
+            comparisons[str(target_frequency_hz)] = comparison
+            continue
+
+        width_by_label = {label: float(variants[label][1]["widthOctaves"]) for label in ("sharp", "mid", "broad")}
+        ordering_pass = (
+            width_by_label["sharp"] + HF_BANDWIDTH_ORDER_MARGIN_OCTAVES < width_by_label["mid"]
+            and width_by_label["mid"] + HF_BANDWIDTH_ORDER_MARGIN_OCTAVES < width_by_label["broad"]
+        )
+
+        for label in ("sharp", "mid", "broad"):
+            case_name, checks = variants[label]
+            comparison["cases"][label] = {
+                "case": case_name,
+                "peakFrequencyHz": float(checks["peakFrequencyHz"]),
+                "peakMagnitudeDb": float(checks["peakMagnitudeDb"]),
+                "widthOctaves": float(checks["widthOctaves"]),
+                "widthHz": float(checks["widthHz"]),
+            }
+
+        comparison["pass"] = ordering_pass
+        comparison["message"] = (
+            "OK"
+            if ordering_pass
+            else (
+                f"Width ordering failed: sharp={width_by_label['sharp']:.4f}, "
+                f"mid={width_by_label['mid']:.4f}, broad={width_by_label['broad']:.4f}"
+            )
+        )
+        comparisons[str(target_frequency_hz)] = comparison
+
+        for label in ("sharp", "mid", "broad"):
+            case_name, _ = variants[label]
+            result = fr_results[case_name]
+            result.setdefault("analysis", {})["bandwidthComparison"] = comparison
+            metrics_index[case_name]["bandwidthComparison"] = comparison
+            result["pass"] = bool(result["pass"]) and ordering_pass
+            if not ordering_pass:
+                result["message"] = comparison["message"]
+            metrics_index[case_name]["pass"] = result["pass"]
+
+    comparisons_path = output_root / "hf_bandwidth_comparisons.json"
+    comparisons_path.write_text(json.dumps(comparisons, indent=2), encoding="utf-8")
+    return {
+        "path": str(comparisons_path.resolve()),
+        "results": comparisons,
+    }
+
+
 def apply_fr_analysis(
     results_by_case: dict[str, dict],
     harness_path: pathlib.Path,
@@ -953,9 +1070,18 @@ def apply_fr_analysis(
             result["message"] = f"FR analysis failed: {exc}"
             failed_cases.append(case_name)
 
+    bandwidth_comparisons = build_hf_bandwidth_comparisons(output_root, fr_results, metrics_index)
+    if bandwidth_comparisons is not None:
+        failed_case_set = set(failed_cases)
+        for case_name, result in fr_results.items():
+            if not result["pass"]:
+                failed_case_set.add(case_name)
+        failed_cases = sorted(failed_case_set)
+
     return {
         "results": metrics_index,
         "failedCases": failed_cases,
+        "hfBandwidthComparisons": bandwidth_comparisons,
     }
 
 
