@@ -24,6 +24,13 @@
       "sharp": 0.0,
       "mid": 0.5,
       "broad": 1.0
+    },
+    "hfAttenSelParamId": "pultec.hf_atten_sel_khz",
+    "hfAttenSelNormalization": "choice_index / (choice_count - 1)",
+    "hfAttenSelChoicesKhz": {
+      "5": 0.0,
+      "10": 0.5,
+      "20": 1.0
     }
   },
   "groups": {
@@ -62,7 +69,13 @@
       "fr_pultec_hf_boost_8khz_75pct_bw_broad",
       "fr_pultec_hf_boost_12khz_75pct_bw_sharp",
       "fr_pultec_hf_boost_12khz_75pct_bw_mid",
-      "fr_pultec_hf_boost_12khz_75pct_bw_broad"
+      "fr_pultec_hf_boost_12khz_75pct_bw_broad",
+      "fr_pultec_hf_atten_5khz_75pct",
+      "fr_pultec_hf_atten_10khz_75pct",
+      "fr_pultec_hf_atten_20khz_75pct",
+      "fr_pultec_hf_boost_8khz_75pct_atten_5khz_75pct",
+      "fr_pultec_hf_boost_10khz_75pct_atten_10khz_75pct",
+      "fr_pultec_hf_boost_12khz_75pct_atten_20khz_75pct"
     ],
     "bypass": [
       "true_bypass_on",

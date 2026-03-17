@@ -18,11 +18,15 @@ ProgramEQAudioProcessor::ProgramEQAudioProcessor()
     pultecHfBoostFreqKhzParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecHfBoostFreqKhz);
     pultecHfBoostDbParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecHfBoostDb);
     pultecHfBandwidthParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecHfBandwidth);
+    pultecHfAttenSelKhzParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecHfAttenSelKhz);
+    pultecHfAttenDbParam = apvts.getRawParameterValue(ProgramEQ::Parameters::IDs::pultecHfAttenDb);
 }
 
 void ProgramEQAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    pultecHfAttenuation.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
     pultecHfBoost.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
+    pultecHfInteraction.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
     pultecLfBoost.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
 }
 
@@ -47,6 +51,8 @@ void ProgramEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     const auto hfFrequencySelection = pultecHfBoostFreqKhzParam != nullptr ? juce::roundToInt(pultecHfBoostFreqKhzParam->load()) : 0;
     const auto hfBoostDb = pultecHfBoostDbParam != nullptr ? pultecHfBoostDbParam->load() : 0.0f;
     const auto hfBandwidthNormalized = pultecHfBandwidthParam != nullptr ? pultecHfBandwidthParam->load() : 0.5f;
+    const auto hfAttenuationSelection = pultecHfAttenSelKhzParam != nullptr ? juce::roundToInt(pultecHfAttenSelKhzParam->load()) : 0;
+    const auto hfAttenuationDb = pultecHfAttenDbParam != nullptr ? pultecHfAttenDbParam->load() : 0.0f;
 
     pultecLfBoost.setEqInEnabled(eqInEnabled);
     pultecLfBoost.setFrequencySelection(frequencySelection);
@@ -59,6 +65,18 @@ void ProgramEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     pultecHfBoost.setBoostDecibels(hfBoostDb);
     pultecHfBoost.setBandwidthNormalized(hfBandwidthNormalized);
     pultecHfBoost.process(buffer);
+
+    pultecHfAttenuation.setEqInEnabled(eqInEnabled);
+    pultecHfAttenuation.setFrequencySelection(hfAttenuationSelection);
+    pultecHfAttenuation.setAttenuationDecibels(hfAttenuationDb);
+    pultecHfAttenuation.process(buffer);
+
+    pultecHfInteraction.setEqInEnabled(eqInEnabled);
+    pultecHfInteraction.setBoostFrequencySelection(hfFrequencySelection);
+    pultecHfInteraction.setAttenuationSelection(hfAttenuationSelection);
+    pultecHfInteraction.setBoostDecibels(hfBoostDb);
+    pultecHfInteraction.setAttenuationDecibels(hfAttenuationDb);
+    pultecHfInteraction.process(buffer);
 }
 
 juce::AudioProcessorEditor* ProgramEQAudioProcessor::createEditor()

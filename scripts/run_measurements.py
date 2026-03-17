@@ -12,6 +12,7 @@ import sys
 import wave
 
 import fr_analysis
+import numpy as np
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -29,6 +30,7 @@ FR_MIN_LOW_FREQUENCY_ATTENUATION_DB = 2.0
 FR_MIN_COMBINED_LOW_FREQUENCY_SHAPE_SPAN_DB = 0.5
 FR_MIN_COMBINED_DEVIATION_FROM_SIMPLE_SUM_DB = 0.25
 HF_BOOST_FREQUENCY_CHOICES_HZ = [3000.0, 4000.0, 5000.0, 8000.0, 10000.0, 12000.0, 16000.0]
+HF_ATTENUATION_SELECTOR_CHOICES_HZ = [5000.0, 10000.0, 20000.0]
 HF_MIN_PEAK_GAIN_DB = 3.0
 HF_PEAK_TRACKING_TOLERANCE_OCTAVES = 0.35
 HF_REFERENCE_SAMPLE_HZ = 1000.0
@@ -42,6 +44,10 @@ HF_BANDWIDTH_LABEL_VALUES = {
 }
 HF_BANDWIDTH_VALUE_TOLERANCE = 1.0e-4
 HF_BANDWIDTH_ORDER_MARGIN_OCTAVES = 0.02
+HF_ATTENUATION_MIN_20K_DB = 2.0
+HF_ATTENUATION_MONOTONIC_TOLERANCE_DB = 0.75
+HF_ATTENUATION_DISTINCT_MARGIN_DB = 0.5
+HF_COMBINED_MIN_DEVIATION_FROM_ADDITIVE_DB = 0.25
 
 
 def parse_args() -> argparse.Namespace:
@@ -294,6 +300,12 @@ def hf_frequency_selection_to_hz(normalized_value: float) -> float:
     return HF_BOOST_FREQUENCY_CHOICES_HZ[index]
 
 
+def hf_attenuation_selection_to_hz(normalized_value: float) -> float:
+    clamped = max(0.0, min(1.0, float(normalized_value)))
+    index = int(round(clamped * float(len(HF_ATTENUATION_SELECTOR_CHOICES_HZ) - 1)))
+    return HF_ATTENUATION_SELECTOR_CHOICES_HZ[index]
+
+
 def hf_bandwidth_value_to_label(normalized_value: float) -> str | None:
     for label, reference_value in HF_BANDWIDTH_LABEL_VALUES.items():
         if abs(float(normalized_value) - reference_value) <= HF_BANDWIDTH_VALUE_TOLERANCE:
@@ -316,10 +328,50 @@ def evaluate_fr_checks(case_definition: dict, analysis: dict) -> dict:
     boost_amount = float(params_by_name.get("pultec.lf_boost_db", 0.0))
     attenuation_amount = float(params_by_name.get("pultec.lf_atten_db", 0.0))
     hf_boost_amount = float(params_by_name.get("pultec.hf_boost_db", 0.0))
+    hf_attenuation_amount = float(params_by_name.get("pultec.hf_atten_db", 0.0))
     hf_bandwidth_normalized = float(params_by_name.get("pultec.hf_bandwidth", 0.5))
     boost_enabled = boost_amount > 0.0
     attenuation_enabled = attenuation_amount > 0.0
     hf_boost_enabled = hf_boost_amount > 0.0
+    hf_attenuation_enabled = hf_attenuation_amount > 0.0
+
+    if hf_boost_enabled and hf_attenuation_enabled and not boost_enabled and not attenuation_enabled:
+        target_frequency_hz = hf_frequency_selection_to_hz(float(params_by_name.get("pultec.hf_boost_freq_khz", 0.0)))
+        selector_frequency_hz = hf_attenuation_selection_to_hz(float(params_by_name.get("pultec.hf_atten_sel_khz", 0.0)))
+        peak = fr_analysis.find_peak_in_band(
+            analysis["frequenciesHz"],
+            analysis["magnitudeDb"],
+            max(HF_PLOT_MIN_HZ, target_frequency_hz * 0.5),
+            min(HF_PLOT_MAX_HZ, target_frequency_hz * 1.75),
+        )
+        sample_points = fr_analysis.sample_points_at_frequencies(
+            analysis["frequenciesHz"],
+            analysis["magnitudeDb"],
+            [HF_REFERENCE_SAMPLE_HZ, target_frequency_hz, selector_frequency_hz, 20000.0],
+        )
+        reference_magnitude_db = float(sample_points[fr_analysis.format_frequency_label(HF_REFERENCE_SAMPLE_HZ)])
+        peak_prominence_db = float(peak["magnitudeDb"]) - reference_magnitude_db
+        attenuation_at_20k_db = reference_magnitude_db - float(sample_points["20000Hz"])
+        tracking_error_octaves = abs(math.log2(peak["frequencyHz"] / target_frequency_hz))
+        passed = (
+            peak_prominence_db >= 1.0
+            and attenuation_at_20k_db >= 1.0
+            and tracking_error_octaves <= HF_PEAK_TRACKING_TOLERANCE_OCTAVES
+        )
+        return {
+            "mode": "hf_boost_and_attenuation",
+            "passed": passed,
+            "checks": {
+                "targetFrequencyHz": target_frequency_hz,
+                "selectorFrequencyHz": selector_frequency_hz,
+                "peakFrequencyHz": float(peak["frequencyHz"]),
+                "peakMagnitudeDb": float(peak["magnitudeDb"]),
+                "peakProminenceDb": peak_prominence_db,
+                "attenuationAt20kDb": attenuation_at_20k_db,
+                "trackingErrorOctaves": tracking_error_octaves,
+                "samplePointsDb": sample_points,
+            },
+        }
 
     if hf_boost_enabled and not boost_enabled and not attenuation_enabled:
         target_frequency_hz = hf_frequency_selection_to_hz(float(params_by_name.get("pultec.hf_boost_freq_khz", 0.0)))
@@ -367,6 +419,45 @@ def evaluate_fr_checks(case_definition: dict, analysis: dict) -> dict:
                 "widthUpperFrequencyHz": width_metrics["upperFrequencyHz"],
                 "widthHz": width_metrics["widthHz"],
                 "widthOctaves": width_metrics["widthOctaves"],
+                "samplePointsDb": sample_points,
+            },
+        }
+
+    if hf_attenuation_enabled and not hf_boost_enabled and not boost_enabled and not attenuation_enabled:
+        selector_frequency_hz = hf_attenuation_selection_to_hz(float(params_by_name.get("pultec.hf_atten_sel_khz", 0.0)))
+        sample_points = fr_analysis.sample_points_at_frequencies(
+            analysis["frequenciesHz"],
+            analysis["magnitudeDb"],
+            [HF_REFERENCE_SAMPLE_HZ, 5000.0, 10000.0, 20000.0],
+        )
+        reference_magnitude_db = float(sample_points[fr_analysis.format_frequency_label(HF_REFERENCE_SAMPLE_HZ)])
+        attenuation_at_5k_db = reference_magnitude_db - float(sample_points["5000Hz"])
+        attenuation_at_10k_db = reference_magnitude_db - float(sample_points["10000Hz"])
+        attenuation_at_20k_db = reference_magnitude_db - float(sample_points["20000Hz"])
+        selector_label = fr_analysis.format_frequency_label(selector_frequency_hz)
+        selector_attenuation_db = reference_magnitude_db - float(sample_points[selector_label])
+        monotonic_increase = (
+            attenuation_at_5k_db <= attenuation_at_10k_db + HF_ATTENUATION_MONOTONIC_TOLERANCE_DB
+            and attenuation_at_10k_db <= attenuation_at_20k_db + HF_ATTENUATION_MONOTONIC_TOLERANCE_DB
+        )
+        upper_region_engaged = attenuation_at_20k_db >= HF_ATTENUATION_MIN_20K_DB
+        selected_region_engaged = selector_attenuation_db >= 0.5
+        passed = monotonic_increase and upper_region_engaged and selected_region_engaged
+        return {
+            "mode": "hf_atten_only",
+            "passed": passed,
+            "checks": {
+                "selectorFrequencyHz": selector_frequency_hz,
+                "referenceMagnitudeDb": reference_magnitude_db,
+                "attenuationAt5kDb": attenuation_at_5k_db,
+                "attenuationAt10kDb": attenuation_at_10k_db,
+                "attenuationAt20kDb": attenuation_at_20k_db,
+                "selectorAttenuationDb": selector_attenuation_db,
+                "minimum20kAttenuationDb": HF_ATTENUATION_MIN_20K_DB,
+                "monotonicIncreaseWithinTolerance": monotonic_increase,
+                "monotonicToleranceDb": HF_ATTENUATION_MONOTONIC_TOLERANCE_DB,
+                "upperRegionEngaged": upper_region_engaged,
+                "selectedRegionEngaged": selected_region_engaged,
                 "samplePointsDb": sample_points,
             },
         }
@@ -441,6 +532,25 @@ def format_fr_failure(provisional: dict) -> str:
             f"widthOctaves={checks.get('widthOctaves')}"
         )
 
+    if mode == "hf_atten_only":
+        return (
+            "FR provisional checks failed: "
+            f"selector {checks.get('selectorFrequencyHz', 0.0):.0f} Hz, "
+            f"attenuationAt5k={checks.get('attenuationAt5kDb', 0.0):.2f} dB, "
+            f"attenuationAt10k={checks.get('attenuationAt10kDb', 0.0):.2f} dB, "
+            f"attenuationAt20k={checks.get('attenuationAt20kDb', 0.0):.2f} dB"
+        )
+
+    if mode == "hf_boost_and_attenuation":
+        return (
+            "FR provisional checks failed: "
+            f"target {checks.get('targetFrequencyHz', 0.0):.0f} Hz, "
+            f"selector {checks.get('selectorFrequencyHz', 0.0):.0f} Hz, "
+            f"peak {checks.get('peakFrequencyHz', 0.0):.0f} Hz, "
+            f"peakProminence={checks.get('peakProminenceDb', 0.0):.2f} dB, "
+            f"attenuationAt20k={checks.get('attenuationAt20kDb', 0.0):.2f} dB"
+        )
+
     if mode == "attenuation_only":
         return (
             "FR provisional checks failed: "
@@ -472,12 +582,31 @@ def build_reference_case_definition(case_definition: dict, boost_amount: float, 
     return reference_case
 
 
+def build_hf_reference_case_definition(case_definition: dict, boost_amount: float, attenuation_amount: float) -> dict:
+    reference_case = copy.deepcopy(case_definition)
+    params_by_name = reference_case.setdefault("paramsByName", {})
+    params_by_name["pultec.hf_boost_db"] = boost_amount
+    params_by_name["pultec.hf_atten_db"] = attenuation_amount
+    return reference_case
+
+
 def reference_cache_key(case_definition: dict) -> tuple[float, float, float]:
     params_by_name = case_definition.get("paramsByName", {})
     return (
         float(params_by_name.get("pultec.lf_freq_hz", 0.0)),
         float(params_by_name.get("pultec.lf_boost_db", 0.0)),
         float(params_by_name.get("pultec.lf_atten_db", 0.0)),
+    )
+
+
+def hf_reference_cache_key(case_definition: dict) -> tuple[float, float, float, float, float]:
+    params_by_name = case_definition.get("paramsByName", {})
+    return (
+        float(params_by_name.get("pultec.hf_boost_freq_khz", 0.0)),
+        float(params_by_name.get("pultec.hf_boost_db", 0.0)),
+        float(params_by_name.get("pultec.hf_bandwidth", 0.5)),
+        float(params_by_name.get("pultec.hf_atten_sel_khz", 0.0)),
+        float(params_by_name.get("pultec.hf_atten_db", 0.0)),
     )
 
 
@@ -537,6 +666,64 @@ def render_reference_fr_case(
     return reference_info
 
 
+def render_reference_hf_fr_case(
+    harness_path: pathlib.Path,
+    plugin_path: pathlib.Path,
+    dry_impulse_path: pathlib.Path,
+    output_root: pathlib.Path,
+    sample_rate: int,
+    block_size: int,
+    case_definition: dict,
+    reference_label: str,
+    reference_cache: dict[tuple[float, float, float, float, float], dict],
+) -> dict:
+    cache_key = hf_reference_cache_key(case_definition)
+    if cache_key in reference_cache:
+        return reference_cache[cache_key]
+
+    boost_freq_norm, boost_norm, bandwidth_norm, atten_sel_norm, atten_norm = cache_key
+    reference_name = (
+        f"hf_boost_freq_{boost_freq_norm:.7f}__boost_{boost_norm:.7f}__bw_{bandwidth_norm:.7f}__"
+        f"atten_sel_{atten_sel_norm:.7f}__atten_{atten_norm:.7f}__{reference_label}"
+        .replace(".", "p")
+    )
+    reference_root = output_root / "_references" / reference_name
+    reference_root.mkdir(parents=True, exist_ok=True)
+
+    case_path = reference_root / "case.json"
+    case_path.write_text(json.dumps(case_definition, indent=2), encoding="utf-8")
+    render_stdout = reference_root / "render.stdout.txt"
+    render_stderr = reference_root / "render.stderr.txt"
+    render_completed = render_case_to_outdir(
+        harness_path=harness_path,
+        plugin_path=plugin_path,
+        dry_impulse_path=dry_impulse_path,
+        case_path=case_path,
+        output_dir=reference_root / "render",
+        sample_rate=sample_rate,
+        block_size=block_size,
+        stdout_path=render_stdout,
+        stderr_path=render_stderr,
+    )
+    wet_path = reference_root / "render" / "wet.wav"
+    if render_completed.returncode != 0 or not wet_path.exists():
+        raise RuntimeError(f"Reference render failed for {reference_name}")
+
+    analysis = fr_analysis.analyze_frequency_response_files(dry_impulse_path, wet_path)
+    metrics_path = reference_root / "fr_metrics.json"
+    fr_analysis.write_metrics_json(metrics_path, analysis)
+    reference_info = {
+        "label": reference_label,
+        "casePath": str(case_path.resolve()),
+        "metricsPath": str(metrics_path.resolve()),
+        "wetPath": str(wet_path.resolve()),
+        "pointsDb": {label: float(value) for label, value in analysis["pointsDb"].items()},
+        "analysis": analysis,
+    }
+    reference_cache[cache_key] = reference_info
+    return reference_info
+
+
 def build_combined_interaction_comparison(
     case_name: str,
     case_root: pathlib.Path,
@@ -585,6 +772,83 @@ def build_combined_interaction_comparison(
         "maxAbsDeviationLabel": max_deviation_label,
         "notSimpleCancellation": not_simple_cancellation,
         "minimumDeviationDb": FR_MIN_COMBINED_DEVIATION_FROM_SIMPLE_SUM_DB,
+        "note": note,
+    }
+    comparison_path = case_root / "interaction_comparison.json"
+    comparison_path.write_text(json.dumps(comparison, indent=2), encoding="utf-8")
+    comparison["comparisonPath"] = str(comparison_path.resolve())
+    return comparison
+
+
+def build_hf_interaction_comparison(
+    case_name: str,
+    case_root: pathlib.Path,
+    combined_analysis: dict,
+    boost_reference: dict,
+    attenuation_reference: dict,
+    boost_frequency_hz: float,
+    attenuation_selector_hz: float,
+) -> dict:
+    frequencies_hz = combined_analysis["frequenciesHz"]
+    combined_magnitude_db = combined_analysis["magnitudeDb"]
+    additive_magnitude_db = boost_reference["analysis"]["magnitudeDb"] + attenuation_reference["analysis"]["magnitudeDb"]
+    deviation_from_additive_db = combined_magnitude_db - additive_magnitude_db
+
+    mask = (frequencies_hz >= 2000.0) & (frequencies_hz <= 20000.0)
+    if not mask.any():
+        raise RuntimeError("No HF bins available for interaction comparison")
+
+    band_indices = np.flatnonzero(mask)
+    max_relative_index = int(np.argmax(np.abs(deviation_from_additive_db[mask])))
+    max_index = int(band_indices[max_relative_index])
+    sample_frequencies_hz = [1000.0, boost_frequency_hz, attenuation_selector_hz, 20000.0]
+    combined_points = fr_analysis.sample_points_at_frequencies(frequencies_hz, combined_magnitude_db, sample_frequencies_hz)
+    additive_points = fr_analysis.sample_points_at_frequencies(frequencies_hz, additive_magnitude_db, sample_frequencies_hz)
+    deviation_points = {
+        label: float(combined_points[label] - additive_points[label])
+        for label in combined_points
+    }
+    boost_label = fr_analysis.format_frequency_label(boost_frequency_hz)
+    max_abs_deviation_db = abs(float(deviation_from_additive_db[max_index]))
+    boost_retention_delta_db = float(deviation_points[boost_label])
+    not_simple_additive = max_abs_deviation_db >= HF_COMBINED_MIN_DEVIATION_FROM_ADDITIVE_DB
+    note = (
+        f"Combined response deviates from the additive expectation by {max_abs_deviation_db:.2f} dB at "
+        f"{float(frequencies_hz[max_index]):.1f} Hz, with {boost_retention_delta_db:.2f} dB extra energy at the boost center."
+        if not_simple_additive
+        else (
+            f"Combined response stays within {max_abs_deviation_db:.2f} dB of the additive expectation "
+            f"across the HF band."
+        )
+    )
+    comparison = {
+        "case": case_name,
+        "boostOnly": {
+            "metricsPath": boost_reference["metricsPath"],
+            "samplePointsDb": fr_analysis.sample_points_at_frequencies(
+                frequencies_hz,
+                boost_reference["analysis"]["magnitudeDb"],
+                sample_frequencies_hz,
+            ),
+        },
+        "attenOnly": {
+            "metricsPath": attenuation_reference["metricsPath"],
+            "samplePointsDb": fr_analysis.sample_points_at_frequencies(
+                frequencies_hz,
+                attenuation_reference["analysis"]["magnitudeDb"],
+                sample_frequencies_hz,
+            ),
+        },
+        "combined": {
+            "samplePointsDb": combined_points,
+        },
+        "additiveExpectationDb": additive_points,
+        "deviationFromAdditiveDb": deviation_points,
+        "maxAbsDeviationDb": max_abs_deviation_db,
+        "maxAbsDeviationFrequencyHz": float(frequencies_hz[max_index]),
+        "boostCenterDeltaDb": boost_retention_delta_db,
+        "notSimpleAdditive": not_simple_additive,
+        "minimumDeviationDb": HF_COMBINED_MIN_DEVIATION_FROM_ADDITIVE_DB,
         "note": note,
     }
     comparison_path = case_root / "interaction_comparison.json"
@@ -918,6 +1182,90 @@ def build_hf_bandwidth_comparisons(
     }
 
 
+def build_hf_attenuation_comparisons(
+    output_root: pathlib.Path,
+    fr_results: dict[str, dict],
+    metrics_index: dict[str, dict],
+) -> dict | None:
+    selected_cases: dict[int, tuple[str, dict]] = {}
+    for case_name, result in fr_results.items():
+        if not case_name.startswith("fr_pultec_hf_atten_"):
+            continue
+
+        provisional = result.get("analysis", {}).get("provisional")
+        if provisional is None or provisional.get("mode") != "hf_atten_only":
+            continue
+
+        checks = provisional.get("checks", {})
+        selector_frequency_hz = checks.get("selectorFrequencyHz")
+        if selector_frequency_hz is None:
+            continue
+
+        selected_cases[int(round(float(selector_frequency_hz)))] = (case_name, checks)
+
+    if not selected_cases:
+        return None
+
+    comparison = {
+        "cases": {},
+        "minimumDistinctMarginDb": HF_ATTENUATION_DISTINCT_MARGIN_DB,
+        "pass": False,
+        "message": "",
+    }
+
+    missing_selectors = [
+        selector_hz
+        for selector_hz in (5000, 10000, 20000)
+        if selector_hz not in selected_cases
+    ]
+    if missing_selectors:
+        comparison["message"] = f"Missing attenuation cases: {', '.join(str(selector_hz) for selector_hz in missing_selectors)}"
+    else:
+        for selector_hz, (case_name, checks) in selected_cases.items():
+            comparison["cases"][str(selector_hz)] = {
+                "case": case_name,
+                "attenuationAt5kDb": float(checks["attenuationAt5kDb"]),
+                "attenuationAt10kDb": float(checks["attenuationAt10kDb"]),
+                "attenuationAt20kDb": float(checks["attenuationAt20kDb"]),
+            }
+
+        attenuation_5k = comparison["cases"]["5000"]
+        attenuation_10k = comparison["cases"]["10000"]
+        attenuation_20k = comparison["cases"]["20000"]
+        distinct_pass = (
+            attenuation_5k["attenuationAt5kDb"] > attenuation_10k["attenuationAt5kDb"] + HF_ATTENUATION_DISTINCT_MARGIN_DB
+            and attenuation_10k["attenuationAt5kDb"] > attenuation_20k["attenuationAt5kDb"] + HF_ATTENUATION_DISTINCT_MARGIN_DB
+            and attenuation_5k["attenuationAt10kDb"] > attenuation_10k["attenuationAt10kDb"] + HF_ATTENUATION_DISTINCT_MARGIN_DB
+            and attenuation_10k["attenuationAt10kDb"] > attenuation_20k["attenuationAt10kDb"] + HF_ATTENUATION_DISTINCT_MARGIN_DB
+        )
+        comparison["pass"] = distinct_pass
+        comparison["message"] = (
+            "OK"
+            if distinct_pass
+            else (
+                f"Selector distinction failed: 5k@10k={attenuation_5k['attenuationAt10kDb']:.2f}, "
+                f"10k@10k={attenuation_10k['attenuationAt10kDb']:.2f}, "
+                f"20k@10k={attenuation_20k['attenuationAt10kDb']:.2f}"
+            )
+        )
+
+        for _, (case_name, _) in selected_cases.items():
+            result = fr_results[case_name]
+            result.setdefault("analysis", {})["attenuationComparison"] = comparison
+            metrics_index[case_name]["attenuationComparison"] = comparison
+            result["pass"] = bool(result["pass"]) and bool(comparison["pass"])
+            if not comparison["pass"]:
+                result["message"] = comparison["message"]
+            metrics_index[case_name]["pass"] = result["pass"]
+
+    comparisons_path = output_root / "hf_attenuation_comparisons.json"
+    comparisons_path.write_text(json.dumps(comparison, indent=2), encoding="utf-8")
+    return {
+        "path": str(comparisons_path.resolve()),
+        "results": comparison,
+    }
+
+
 def apply_fr_analysis(
     results_by_case: dict[str, dict],
     harness_path: pathlib.Path,
@@ -938,6 +1286,7 @@ def apply_fr_analysis(
     metrics_index: dict[str, dict] = {}
     failed_cases: list[str] = []
     reference_cache: dict[tuple[float, float, float], dict] = {}
+    hf_reference_cache: dict[tuple[float, float, float, float, float], dict] = {}
 
     for case_name, result in fr_results.items():
         if result.get("render", {}).get("exitCode") != 0:
@@ -977,10 +1326,16 @@ def apply_fr_analysis(
             plot_min_hz = fr_analysis.DEFAULT_PLOT_MIN_HZ
             plot_max_hz = None
             plot_title = "Frequency Response Check"
-            if provisional["mode"] == "hf_boost_only":
+            if provisional["mode"] in ("hf_boost_only", "hf_atten_only", "hf_boost_and_attenuation"):
                 plot_min_hz = HF_PLOT_MIN_HZ
                 plot_max_hz = HF_PLOT_MAX_HZ
-                plot_title = "HF Boost Frequency Response Check"
+                plot_title = (
+                    "HF Boost Frequency Response Check"
+                    if provisional["mode"] == "hf_boost_only"
+                    else "HF Attenuation Frequency Response Check"
+                    if provisional["mode"] == "hf_atten_only"
+                    else "HF Combined Frequency Response Check"
+                )
             fr_analysis.save_plot(
                 plot_path,
                 analysis["frequenciesHz"],
@@ -1003,6 +1358,8 @@ def apply_fr_analysis(
             params_by_name = result["caseDefinition"].get("paramsByName", {})
             boost_amount = float(params_by_name.get("pultec.lf_boost_db", 0.0))
             attenuation_amount = float(params_by_name.get("pultec.lf_atten_db", 0.0))
+            hf_boost_amount = float(params_by_name.get("pultec.hf_boost_db", 0.0))
+            hf_attenuation_amount = float(params_by_name.get("pultec.hf_atten_db", 0.0))
             if boost_amount > 0.0 and attenuation_amount > 0.0:
                 boost_reference = render_reference_fr_case(
                     harness_path=harness_path,
@@ -1034,13 +1391,68 @@ def apply_fr_analysis(
                     attenuation_reference=attenuation_reference,
                 )
                 result["analysis"]["interactionComparison"] = interaction_comparison
+            elif hf_boost_amount > 0.0 and hf_attenuation_amount > 0.0:
+                boost_frequency_hz = hf_frequency_selection_to_hz(float(params_by_name.get("pultec.hf_boost_freq_khz", 0.0)))
+                attenuation_selector_hz = hf_attenuation_selection_to_hz(float(params_by_name.get("pultec.hf_atten_sel_khz", 0.0)))
+                boost_reference = render_reference_hf_fr_case(
+                    harness_path=harness_path,
+                    plugin_path=plugin_path,
+                    dry_impulse_path=dry_impulse_path,
+                    output_root=output_root,
+                    sample_rate=sample_rate,
+                    block_size=block_size,
+                    case_definition=build_hf_reference_case_definition(result["caseDefinition"], hf_boost_amount, 0.0),
+                    reference_label="boost_only",
+                    reference_cache=hf_reference_cache,
+                )
+                attenuation_reference = render_reference_hf_fr_case(
+                    harness_path=harness_path,
+                    plugin_path=plugin_path,
+                    dry_impulse_path=dry_impulse_path,
+                    output_root=output_root,
+                    sample_rate=sample_rate,
+                    block_size=block_size,
+                    case_definition=build_hf_reference_case_definition(result["caseDefinition"], 0.0, hf_attenuation_amount),
+                    reference_label="atten_only",
+                    reference_cache=hf_reference_cache,
+                )
+                interaction_comparison = build_hf_interaction_comparison(
+                    case_name=case_name,
+                    case_root=case_root,
+                    combined_analysis=analysis,
+                    boost_reference=boost_reference,
+                    attenuation_reference=attenuation_reference,
+                    boost_frequency_hz=boost_frequency_hz,
+                    attenuation_selector_hz=attenuation_selector_hz,
+                )
+                result["analysis"]["interactionComparison"] = interaction_comparison
 
             result["pass"] = bool(provisional["passed"])
             if "interactionComparison" in result["analysis"]:
-                result["pass"] = result["pass"] and bool(result["analysis"]["interactionComparison"]["notSimpleCancellation"])
+                interaction_pass = (
+                    bool(result["analysis"]["interactionComparison"].get("notSimpleCancellation"))
+                    if provisional["mode"] == "boost_and_attenuation"
+                    else bool(result["analysis"]["interactionComparison"].get("notSimpleAdditive"))
+                )
+                result["pass"] = result["pass"] and interaction_pass
             result["message"] = (
                 "OK"
                 if result["pass"]
+                else result["analysis"]["interactionComparison"]["note"]
+                if (
+                    "interactionComparison" in result["analysis"]
+                    and provisional["passed"]
+                    and (
+                        (
+                            provisional["mode"] == "boost_and_attenuation"
+                            and not result["analysis"]["interactionComparison"].get("notSimpleCancellation", False)
+                        )
+                        or (
+                            provisional["mode"] == "hf_boost_and_attenuation"
+                            and not result["analysis"]["interactionComparison"].get("notSimpleAdditive", False)
+                        )
+                    )
+                )
                 else format_fr_failure(provisional)
             )
             metrics_index[case_name] = {
@@ -1078,10 +1490,19 @@ def apply_fr_analysis(
                 failed_case_set.add(case_name)
         failed_cases = sorted(failed_case_set)
 
+    attenuation_comparisons = build_hf_attenuation_comparisons(output_root, fr_results, metrics_index)
+    if attenuation_comparisons is not None:
+        failed_case_set = set(failed_cases)
+        for case_name, result in fr_results.items():
+            if not result["pass"]:
+                failed_case_set.add(case_name)
+        failed_cases = sorted(failed_case_set)
+
     return {
         "results": metrics_index,
         "failedCases": failed_cases,
         "hfBandwidthComparisons": bandwidth_comparisons,
+        "hfAttenuationComparisons": attenuation_comparisons,
     }
 
 
