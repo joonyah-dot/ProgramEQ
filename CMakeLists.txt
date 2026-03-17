@@ -49,6 +49,8 @@ target_compile_definitions(
 target_sources(
     ProgramEQ
     PRIVATE
+    Source/DSP/PultecAnalogStage.cpp
+    Source/DSP/PultecAnalogStage.h
     Source/DSP/PultecHfAttenuation.cpp
     Source/DSP/PultecHfAttenuation.h
     Source/DSP/PultecHfBoost.cpp
